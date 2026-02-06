@@ -12,6 +12,11 @@ BATCH_SIZE = 64
 EPOCHS = 6
 LEARNING_RATE = 1e-3
 
+EMB_DIM = 192
+EPS = 1e-6
+
+BEST_MODEL_PATH = "cnn_speakerid_best.pth"
+
 TRAIN_WAV_ROOT = r"C:\Users\User\Desktop\data\train"
 TEST_WAV_ROOT = r"C:\Users\User\Desktop\data"
 TEST_CSV = r"C:\Users\User\Desktop\data\test_full.csv"
