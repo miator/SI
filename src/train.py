@@ -2,13 +2,15 @@ import time
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+# from pathlib import Path
 from tqdm import tqdm
 from functools import partial
 
 import constants as c
-from dataset import (AudioDataset, split_train_folder_by_speaker,
+from dataset import (AudioDataset, split_train_folder_by_speaker, read_audio,
                      load_csv, build_utterances, pad_trunc_collate_fn)
-from features import MFCCExtraction
+# find_classes, build_utterances_from_train_folder
+from features import LogMelExtraction
 from model import CNN1DNET
 
 import warnings
@@ -64,16 +66,21 @@ def main():
     test_utts = build_utterances(test_rows, c.TEST_WAV_ROOT, class_to_index,
                                  path_col="file_path", speaker_col="speaker")
 
-    fe = MFCCExtraction(
+    fe = LogMelExtraction(
         sample_rate=c.SAMPLE_RATE,
-        n_mfcc=c.N_MFCC,
-        n_mels=c.N_MELS,
         n_fft=c.N_FFT,
         win_length=c.WIN_LENGTH,
         hop_length=c.HOP_LENGTH,
+        n_mels=c.N_MELS,
         f_min=c.FMIN,
         f_max=c.FMAX,
     )
+
+    # sanity: one file → log-mel
+    wav0, _ = train_utts[0]
+    w = read_audio(wav0, c.SAMPLE_RATE)
+    x = fe(w)
+    print("logmel sample:", x.shape, x.dtype, float(x.min()), float(x.max()))
 
     train_ds = AudioDataset(train_utts, c.SAMPLE_RATE, fe)
     val_ds = AudioDataset(val_utts, c.SAMPLE_RATE, fe)
@@ -87,8 +94,16 @@ def main():
     test_loader = DataLoader(test_ds, batch_size=c.BATCH_SIZE, shuffle=False, collate_fn=collate,
                              num_workers=4, prefetch_factor=4, persistent_workers=True)
 
+    xb, yb, lb, *_ = next(iter(train_loader))
+    print("batch:", xb.shape, yb.shape, lb.shape)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = CNN1DNET(n_mfcc=c.N_MFCC, num_classes=num_classes, dropout=0.3).to(device)
+    model = CNN1DNET(n_feats=c.N_MELS, num_classes=num_classes, emb_dim=192, dropout=0.3).to(device)
+
+    xb = xb.to(device)  # sanity check
+    print("logits:", model(xb).shape)
+    print("emb:", model(xb, return_embedding=True).shape)
+
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -117,12 +132,11 @@ def main():
                 print(f"early stop at epoch {epoch +1}")
                 break
 
-        tqdm.write(
+        print(
             f"epoch {epoch + 1}/{c.EPOCHS} "
             f"train loss {tr_loss:.4f} acc {tr_acc:.4f} "
             f"val loss {va_loss:.4f} acc {va_acc:.4f} "
-            f"time {elapsed:.2f}s"
-        )
+            f"time {elapsed:.2f}s")
 
     model.load_state_dict((torch.load(best_path, map_location=device)))
     t0 = time.perf_counter()
