@@ -5,8 +5,6 @@ from torch.utils.data import Dataset, DataLoader
 import torchaudio
 import random
 
-torchaudio.set_audio_backend("soundfile")
-
 
 def load_csv(path):
     # for testing the find_classes_from_csv function

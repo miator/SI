@@ -1,17 +1,15 @@
-# import os
 import time
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from pathlib import Path
 from tqdm import tqdm
 from functools import partial
 
 import constants as c
 from dataset import (AudioDataset, split_train_folder_by_speaker,
-                     build_utterances_from_train_folder, pad_trunc_collate_fn)
+                     load_csv, build_utterances, pad_trunc_collate_fn)
 from features import MFCCExtraction
-from model import FeedForwardNet
+from model import CNN1DNET
 
 import warnings
 
@@ -54,15 +52,17 @@ def main():
 
     classes, class_to_index, train_utts, val_utts, _ = split_train_folder_by_speaker(
         c.TRAIN_WAV_ROOT, ratios=(0.9, 0.1, 0.0), seed=37)
-    missing = []
-    for p in Path(c.TEST_WAV_ROOT).iterdir():
-        if p.is_dir() and p.name not in class_to_index:
-            missing.append(p.name)
-    if missing:
-        raise ValueError(f"Test contains speaker not in train set: {missing}")
 
     num_classes = len(classes)
-    test_utts = build_utterances_from_train_folder(c.TEST_WAV_ROOT, class_to_index)
+    test_rows = load_csv(c.TEST_CSV)
+
+    test_speakers = {r["speaker"] for r in test_rows}
+    missing = sorted([s for s in test_speakers if s not in class_to_index])
+    if missing:
+        raise ValueError(f"Test CSV contains speakers not in train set: {missing}")
+
+    test_utts = build_utterances(test_rows, c.TEST_WAV_ROOT, class_to_index,
+                                 path_col="file_path", speaker_col="speaker")
 
     fe = MFCCExtraction(
         sample_rate=c.SAMPLE_RATE,
@@ -88,8 +88,7 @@ def main():
                              num_workers=4, prefetch_factor=4, persistent_workers=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = FeedForwardNet(n_mfcc=c.N_MFCC, max_frames=c.MAX_FRAMES, num_classes=num_classes).to(device)
-
+    model = CNN1DNET(n_mfcc=c.N_MFCC, num_classes=num_classes, dropout=0.3).to(device)
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -99,9 +98,8 @@ def main():
     patience = 5
     min_delta = 1e-4
     best_val_loss = float("inf")
-    # best_val = -1.0
     bad_epochs = 0
-    best_path = "ff_speakerid_best.pth"
+    best_path = "cnn_speakerid_best.pth"
 
     for epoch in range(c.EPOCHS):
         start = time.perf_counter()
@@ -119,11 +117,12 @@ def main():
                 print(f"early stop at epoch {epoch +1}")
                 break
 
-        print(
+        tqdm.write(
             f"epoch {epoch + 1}/{c.EPOCHS} "
             f"train loss {tr_loss:.4f} acc {tr_acc:.4f} "
             f"val loss {va_loss:.4f} acc {va_acc:.4f} "
-            f"time {elapsed:.2f}s")
+            f"time {elapsed:.2f}s"
+        )
 
     model.load_state_dict((torch.load(best_path, map_location=device)))
     t0 = time.perf_counter()
