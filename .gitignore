@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+
+# IDE
+.idea/
+
+# ML artifacts
+*.pth
+emb_outputs/
+*.npy
+
+# OS
+.DS_Store
