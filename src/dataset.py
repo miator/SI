@@ -84,7 +84,7 @@ class AudioDataset(Dataset):
             feat = self.cache[key]
         else:
             wav = read_audio(path, self.sample_rate)  # (T, )
-            feat = self.fe(wav)  # (frames, n_mfcc)
+            feat = self.fe(wav)  # (frames, n_mels)
             self.cache[key] = feat
         return feat, torch.tensor(label, dtype=torch.long)
 
