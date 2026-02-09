@@ -20,5 +20,7 @@ dependencies = [
   "torchaudio=2.8.0",
   "python_speech_features = 0.6",
   "tqdm=4.67.3",
-  "colorama=0.4.6"
+  "colorama=0.4.6",
+  "scikit-learn=1.6.1",
+  "scipy=1.13.1"
 ]
