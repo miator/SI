@@ -4,9 +4,10 @@ from pathlib import Path
 from dataset import load_csv, read_audio
 from features import LogMelExtraction
 
-root = Path(c.TRAIN_WAV_ROOT)
+root_train = Path(c.TRAIN_WAV_ROOT)
+rows_train = load_csv(c.TRAIN_CSV)
 counts = {spk.name: len(list(spk.rglob("*.wav")))
-          for spk in root.iterdir() if spk.is_dir()}
+          for spk in root_train.iterdir() if spk.is_dir()}
 
 total = sum(counts.values())
 n_spk = len(counts)
@@ -15,19 +16,20 @@ print("Speakers:", n_spk)
 print("Min files:", min(counts.values()))
 print("Max files:", max(counts.values()))
 print("Avg files:", total / n_spk)
+print("Total train files:", len(rows_train))
 
 # Optional: show most imbalanced
 for k, v in sorted(counts.items(), key=lambda x: x[1]):
     print(k, v)
 
 
-rows = load_csv(c.TEST_CSV)
-speakers = [row["speaker"] for row in rows]
-paths = [row["file_path"] for row in rows]
+rows_test = load_csv(c.TEST_CSV)
+speakers = [row["speaker"] for row in rows_test]
+paths = [row["file_path"] for row in rows_test]
 
 cnt = Counter(speakers)
 
-print("Total test files:", len(rows))
+print("Total test files:", len(rows_test))
 print("Speakers:", len(cnt))
 print("Min files:", min(cnt.values()))
 print("Max files:", max(cnt.values()))
