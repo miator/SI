@@ -15,6 +15,7 @@ from dataset import (
 )
 from features import LogMelExtraction
 from model import CNN1DNET
+import metrics
 
 
 BEST_PATH = "cnn_speakerid_best.pth"   # same as train.py
@@ -150,6 +151,11 @@ def main():
     same_scores = cosine_scores(embs, same)
     diff_scores = cosine_scores(embs, diff)
     summarize(same_scores, diff_scores)
+
+    res = metrics.compute_roc_auc_eer(-same_scores, -diff_scores)
+    print(f"ROC AUC: {res['auc']:.6f}")
+    print(f"EER: {res['eer']:.6f} @ thr {res['eer_threshold']:.6f} "
+          f"(FPR {res['fpr_at_eer']:.6f}, FNR {res['fnr_at_eer']:.6f})")
 
 
 if __name__ == "__main__":
