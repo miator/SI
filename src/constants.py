@@ -19,4 +19,5 @@ BEST_MODEL_PATH = "cnn_speakerid_best.pth"
 
 TRAIN_WAV_ROOT = r"C:\Users\User\Desktop\data\train"
 TEST_WAV_ROOT = r"C:\Users\User\Desktop\data"
+TRAIN_CSV = r"C:\Users\User\Desktop\data\train.csv"
 TEST_CSV = r"C:\Users\User\Desktop\data\test_full.csv"
