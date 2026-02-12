@@ -1,64 +1,137 @@
-from collections import Counter
-import constants as c
+from __future__ import annotations
 from pathlib import Path
-from dataset import load_csv, read_audio
-from features import LogMelExtraction
+from collections import Counter, defaultdict
+# import statistics as stats
 
-root_train = Path(c.TRAIN_WAV_ROOT)
-rows_train = load_csv(c.TRAIN_CSV)
-counts = {spk.name: len(list(spk.rglob("*.wav")))
-          for spk in root_train.iterdir() if spk.is_dir()}
-
-total = sum(counts.values())
-n_spk = len(counts)
-
-print("Speakers:", n_spk)
-print("Min files:", min(counts.values()))
-print("Max files:", max(counts.values()))
-print("Avg files:", total / n_spk)
-print("Total train files:", len(rows_train))
-
-# Optional: show most imbalanced
-for k, v in sorted(counts.items(), key=lambda x: x[1]):
-    print(k, v)
+import torchaudio
 
 
-rows_test = load_csv(c.TEST_CSV)
-speakers = [row["speaker"] for row in rows_test]
-paths = [row["file_path"] for row in rows_test]
-
-cnt = Counter(speakers)
-
-print("Total test files:", len(rows_test))
-print("Speakers:", len(cnt))
-print("Min files:", min(cnt.values()))
-print("Max files:", max(cnt.values()))
-print("Avg files:", sum(cnt.values()) / len(cnt))
-
-for spk, n in sorted(cnt.items(), key=lambda x: x[1]):
-    print(spk, n)
-
-# sanity check: paths exist
-missing = [p for p in paths if not (Path(c.TEST_WAV_ROOT) / p).is_file()]
-print("Missing files:", len(missing))
-if missing:
-    print(missing[:5])
+ROOT = Path(r"C:\Users\User\Desktop\50spk_1h\pcm16_16k")
 
 
-# checks LogMelExtraction functionality
-wav = read_audio(Path("C://Users/User/desktop/data/train/clb/arctic_a0145.wav"), sample_rate=c.SAMPLE_RATE)
-extractor = LogMelExtraction(
-    sample_rate=c.SAMPLE_RATE,
-    n_fft=c.N_FFT,
-    win_length=c.WIN_LENGTH,
-    hop_length=c.HOP_LENGTH,
-    n_mels=c.N_MELS,
-    f_min=c.FMIN,
-    f_max=c.FMAX,
-    eps=1e-5
-)
+def sec_to_hms(seconds: float) -> str:
+    seconds = float(seconds)
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    if h > 0:
+        return f"{h:d}h {m:02d}m {s:05.2f}s"
+    return f"{m:d}m {s:05.2f}s"
 
-x = extractor(wav)
-print("shape:", x.shape)
-print("dtype:", x.dtype)
-print("min:", x.min().item(), "max:", x.max().item())
+
+def main():
+    speaker_dirs = sorted([p for p in ROOT.iterdir() if p.is_dir()], key=lambda p: p.name)
+    print("Root:", ROOT)
+    print("Speakers:", len(speaker_dirs))
+
+    ext_cnt = Counter()
+    sr_cnt = Counter()
+    ch_cnt = Counter()
+
+    # per speaker stats
+    spk_file_counts = {}
+    spk_durations = {}  # seconds
+    spk_bad_files = defaultdict(list)
+
+    bad_info = []   # cannot read metadata
+    bad_load = []   # cannot load waveform
+
+    total_files = 0
+    total_seconds = 0.0
+
+    for spk_dir in speaker_dirs:
+        wavs = sorted([p for p in spk_dir.rglob("*") if p.is_file()])
+        spk_total = 0.0
+        spk_ok_files = 0
+
+        for p in wavs:
+            total_files += 1
+            ext_cnt[p.suffix.lower()] += 1
+
+            # Try metadata first (cheap)
+            try:
+                info = torchaudio.info(str(p))
+            except Exception as e:
+                bad_info.append((str(p), repr(e)))
+                spk_bad_files[spk_dir.name].append((p.name, "info_fail"))
+                continue
+
+            sr_cnt[int(info.sample_rate)] += 1
+            ch_cnt[int(info.num_channels)] += 1
+
+            # Duration from metadata
+            dur = float(info.num_frames) / float(info.sample_rate) if info.sample_rate > 0 else 0.0
+
+            # Now try a real decode load (catches mpg123 errors)
+            try:
+                _wav, _sr = torchaudio.load(str(p))
+            except Exception as e:
+                bad_load.append((str(p), repr(e)))
+                spk_bad_files[spk_dir.name].append((p.name, "load_fail"))
+                continue
+
+            spk_ok_files += 1
+            spk_total += dur
+
+        spk_file_counts[spk_dir.name] = spk_ok_files
+        spk_durations[spk_dir.name] = spk_total
+        total_seconds += spk_total
+
+    print("\n--- Extensions (all files found) ---")
+    for k, v in ext_cnt.most_common():
+        print(f"{k or '<noext>'}: {v}")
+
+    print("\n--- Sample rates (info ok files) ---")
+    for k, v in sr_cnt.most_common():
+        print(f"{k}: {v}")
+
+    print("\n--- Channels (info ok files) ---")
+    for k, v in ch_cnt.most_common():
+        print(f"{k}: {v}")
+
+    ok_speakers = list(spk_file_counts.keys())
+    file_counts = [spk_file_counts[s] for s in ok_speakers]
+    durations = [spk_durations[s] for s in ok_speakers]
+
+    print("\n--- Per-speaker summary (decoded ok files only) ---")
+    print("Total decoded files:", sum(file_counts))
+    print("Total decoded duration:", sec_to_hms(total_seconds))
+    if file_counts:
+        print("Files per speaker: min/avg/max =",
+              min(file_counts), f"{sum(file_counts)/len(file_counts):.2f}", max(file_counts))
+    if durations:
+        print("Duration per speaker: min/avg/max =",
+              sec_to_hms(min(durations)), sec_to_hms(sum(durations)/len(durations)), sec_to_hms(max(durations)))
+
+    # List a few worst speakers by duration
+    worst = sorted(spk_durations.items(), key=lambda x: x[1])[:10]
+    print("\n--- Lowest-duration speakers (top 10) ---")
+    for spk, sec in worst:
+        print(f"{spk}: {sec_to_hms(sec)} (files {spk_file_counts[spk]})")
+
+    # Bad files report
+    print("\n--- Bad files ---")
+    print("info() failures:", len(bad_info))
+    if bad_info[:10]:
+        print("Examples (info_fail):")
+        for path, err in bad_info[:10]:
+            print(" ", path)
+            print("   ", err)
+
+    print("load() failures:", len(bad_load))
+    if bad_load[:10]:
+        print("Examples (load_fail):")
+        for path, err in bad_load[:10]:
+            print(" ", path)
+            print("   ", err)
+
+    # Speakers with any bad files
+    spk_with_bad = [(spk, len(items)) for spk, items in spk_bad_files.items()]
+    spk_with_bad.sort(key=lambda x: x[1], reverse=True)
+    print("\nSpeakers with bad files:", len(spk_with_bad))
+    for spk, nbad in spk_with_bad[:10]:
+        print(f"{spk}: bad_files={nbad}")
+
+
+if __name__ == "__main__":
+    main()
