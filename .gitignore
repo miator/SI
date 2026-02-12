@@ -16,3 +16,6 @@ emb_outputs/
 
 # OS
 .DS_Store
+
+runs/
+spk50_1h/
