@@ -1,70 +1,98 @@
-import csv
 import time
 from pathlib import Path
+from functools import partial
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from functools import partial
-from typing import Dict, List, Tuple
 
 import constants as c
 from dataset import (AudioDataset, split_within_speaker, pad_trunc_collate_fn)
 from features import LogMelExtraction
 from model import CNN1DNET
+# from triplet import (TripletMarginLossExplicit, BatchHardTripletLoss)
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
-Utterance = Tuple[Path, int]
+
+def make_random_triplets(labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Build explicit (a_idx, p_idx, n_idx) triplets from labels within a batch.
+    One triplet per anchor when possible.
+    """
+    device = labels.device
+    B = labels.size(0)
+
+    a_list, p_list, n_list = [], [], []
+    for i in range(B):
+        yi = labels[i]
+        pos = torch.where(labels == yi)[0]
+        pos = pos[pos != i]
+        neg = torch.where(labels != yi)[0]
+
+        if pos.numel() == 0 or neg.numel() == 0:
+            continue
+
+        p = pos[torch.randint(0, pos.numel(), (1,), device=device).item()]
+        n = neg[torch.randint(0, neg.numel(), (1,), device=device).item()]
+
+        a_list.append(i)
+        p_list.append(int(p))
+        n_list.append(int(n))
+
+    if len(a_list) == 0:
+        empty = torch.empty(0, dtype=torch.long, device=device)
+        return empty, empty, empty
+
+    return (
+        torch.tensor(a_list, dtype=torch.long, device=device),
+        torch.tensor(p_list, dtype=torch.long, device=device),
+        torch.tensor(n_list, dtype=torch.long, device=device),
+    )
 
 
-def load_chunks_csv(path: Path) -> List[dict]:
-    with open(path, newline="", encoding="utf-8"):
-        return list(csv.DictReader)
-
-
-def build_class_mapping(rows: List[dict], speaker_col: str = "speaker") -> Dict[str, int]:
-    speakers = sorted({r[speaker_col] for r in rows})
-    return {spk: i for i, spk in enumerate(speakers)}
-
-
-def accuracy(logits, targets):
-    preds = torch.argmax(logits, dim=1)
-    return (preds == targets).float().mean().item()
-
-
-def run_epoch(model, loader, loss_fn, optimizer, device, train: bool, desc: str):
+def run_epoch_triplet(model, loader, triplet_loss, optimizer, device, train: bool, desc: str):
     model.train() if train else model.eval()
     total_loss = 0.0
-    total_acc = 0.0
-    n = 0
+    total_triplets = 0
 
     ctx = torch.enable_grad() if train else torch.no_grad()
     with ctx:
         for x, y, _lengths in tqdm(loader, desc=desc):
             x, y = x.to(device), y.to(device)
 
-            logits = model(x)
-            loss = loss_fn(logits, y)
+            emb = model(x, return_embedding=True)  # (B, D), already L2-normalized in your model
+
+            a_idx, p_idx, n_idx = make_random_triplets(y)
+            if a_idx.numel() == 0:
+                continue
+
+            anchor = emb[a_idx]
+            positive = emb[p_idx]
+            negative = emb[n_idx]
+
+            loss = triplet_loss(anchor, positive, negative)
 
             if train:
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
-            bs = y.size(0)
-            total_loss += loss.item() * bs
-            total_acc += accuracy(logits, y) * bs
-            n += bs
+            t = a_idx.numel()
+            total_loss += loss.item() * t
+            total_triplets += t
 
-    return total_loss / n, total_acc / n
+    if total_triplets == 0:
+        return float("inf")
+    return total_loss / total_triplets
 
 
 def main():
     classes, class_to_index, train_utts, val_utts, test_utts = split_within_speaker(
-        c.DATA_ROOT, ratios=(0.8, 0.1, 0.1), seed=37)
+        c.DATA_ROOT, ratios=(0.8, 0.1, 0.1), seed=37
+    )
 
     num_classes = len(classes)
     print("Speakers:", num_classes)
@@ -89,21 +117,24 @@ def main():
 
     collate = partial(pad_trunc_collate_fn, max_frames=c.MAX_FRAMES)
 
-    train_loader = DataLoader(train_ds, batch_size=c.BATCH_SIZE, shuffle=True, collate_fn=collate,
-                              num_workers=4, prefetch_factor=4, persistent_workers=True)
-    val_loader = DataLoader(val_ds, batch_size=c.BATCH_SIZE, shuffle=False, collate_fn=collate,
-                            num_workers=4, prefetch_factor=4, persistent_workers=True)
-    test_loader = DataLoader(test_ds, batch_size=c.BATCH_SIZE, shuffle=False, collate_fn=collate,
-                             num_workers=4, prefetch_factor=4, persistent_workers=True)
+    train_loader = DataLoader(
+        train_ds, batch_size=c.BATCH_SIZE, shuffle=True, collate_fn=collate,
+        num_workers=4, prefetch_factor=4, persistent_workers=True
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=c.BATCH_SIZE, shuffle=False, collate_fn=collate,
+        num_workers=4, prefetch_factor=4, persistent_workers=True
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=c.BATCH_SIZE, shuffle=False, collate_fn=collate,
+        num_workers=4, prefetch_factor=4, persistent_workers=True
+    )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = CNN1DNET(n_feats=c.N_MELS, num_classes=num_classes, emb_dim=c.EMB_DIM, dropout=0.3).to(device)
 
-    loss_fn = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=c.LEARNING_RATE,
-        weight_decay=1e-4)
+    triplet_loss = nn.TripletMarginLoss(margin=0.2, p=2, eps=1e-6, swap=False)
+    optimizer = torch.optim.Adam(model.parameters(), lr=c.LEARNING_RATE, weight_decay=1e-4)
 
     patience = 5
     min_delta = 1e-4
@@ -116,8 +147,8 @@ def main():
     for epoch in range(c.EPOCHS):
         start = time.perf_counter()
 
-        tr_loss, tr_acc = run_epoch(model, train_loader, loss_fn, optimizer, device, train=True, desc="train")
-        va_loss, va_acc = run_epoch(model, val_loader, loss_fn, optimizer, device, train=False, desc="val")
+        tr_loss = run_epoch_triplet(model, train_loader, triplet_loss, optimizer, device, train=True, desc="train")
+        va_loss = run_epoch_triplet(model, val_loader, triplet_loss, optimizer, device, train=False, desc="val")
 
         elapsed = time.perf_counter() - start
 
@@ -128,25 +159,22 @@ def main():
         else:
             bad_epochs += 1
             if bad_epochs >= patience:
-                print(f"early stop at epoch {epoch +1}")
+                print(f"early stop at epoch {epoch + 1}")
                 break
 
         print(
             f"epoch {epoch + 1}/{c.EPOCHS} | "
-            f"train loss {tr_loss:.4f} acc {tr_acc:.4f} | "
-            f"val loss {va_loss:.4f} acc {va_acc:.4f} | "
+            f"train triplet loss {tr_loss:.4f} | "
+            f"val triplet loss {va_loss:.4f} | "
             f"time {elapsed:.2f}s"
         )
 
     # ---- TEST ----
-    model.load_state_dict((torch.load(best_path, map_location=device)))
+    model.load_state_dict(torch.load(best_path, map_location=device))
     t0 = time.perf_counter()
-    te_loss, te_acc = run_epoch(model, test_loader, loss_fn, optimizer, device, train=False, desc="test")
+    te_loss = run_epoch_triplet(model, test_loader, triplet_loss, optimizer, device, train=False, desc="test")
     t_test = time.perf_counter() - t0
-    print(
-        f"test loss {te_loss:.4f} "
-        f"acc {te_acc:.4f} "
-        f"time{t_test:.2f}s")
+    print(f"test triplet loss {te_loss:.4f} time {t_test:.2f}s")
 
 
 if __name__ == "__main__":
