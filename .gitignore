@@ -13,6 +13,7 @@ __pycache__/
 *.pth
 emb_outputs/
 emb_outputs_spk50_1h/
+emb_outputs_batchhard/
 *.npy
 
 # OS
