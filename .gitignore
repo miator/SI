@@ -11,9 +11,14 @@ __pycache__/
 
 # ML artifacts
 *.pth
-emb_outputs/
-emb_outputs_spk50_1h/
-emb_outputs_batchhard/
+emb_outputs_cmu_arctic/
+emb_outputs_ce_spk50_1h/
+emb_outputs_bh_P8K8_m0.3_e6/
+emb_outputs_bh_P16K4_m0.2_e3/
+emb_outputs_bh_P8K8_m0.4_e6/
+emb_outputs_bh_P12K5_m0.3_e10/
+
+
 *.npy
 
 # OS
