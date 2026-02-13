@@ -12,10 +12,12 @@ __pycache__/
 # ML artifacts
 *.pth
 emb_outputs/
+emb_outputs_spk50_1h/
 *.npy
 
 # OS
 .DS_Store
 
 runs/
-spk50_1h/
+
+
