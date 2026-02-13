@@ -1,3 +1,7 @@
+import sys
+import time
+from tqdm import tqdm
+
 import os
 import hashlib
 import numpy as np
@@ -8,22 +12,19 @@ import constants as c
 import metrics
 
 from dataset import (
-    load_csv,
-    build_utterances,
-    split_train_folder_by_speaker,
-    read_audio,
-)
+    split_within_speaker,
+    read_audio_fast)
 from features import LogMelExtraction
 from model import CNN1DNET
 from verify import (
     make_loader,
     extract_embeddings,
     sample_pairs,
-    cosine_scores,
-)
+    cosine_scores)
 
+sys.stdout.reconfigure(line_buffering=True)
 
-BEST_PATH = c.BEST_MODEL_PATH if hasattr(c, "BEST_MODEL_PATH") else "cnn_speakerid_best.pth"
+BEST_PATH = c.BEST_MODEL_PATH
 
 
 def load_model(num_classes: int, device: str):
@@ -55,22 +56,22 @@ def pcm16_hash(wav: torch.Tensor) -> str:
     x = wav.detach().cpu()
     x = torch.clamp(x, -1.0, 1.0)
     x = (x * 32767.0).round().to(torch.int16).numpy()
-    h = hashlib.sha256(x.tobytes()).hexdigest()
-    return h
+    return hashlib.sha256(x.tobytes()).hexdigest()
 
 
 def audio_hash_overlap_check(train_utts, test_utts):
     """
-    Hash each waveform after read_audio() (resample+mono) and check duplicates across splits.
+    Hash waveform content and detect duplicates across splits.
+    For 3s chunks, duplicates should be 0 unless the dataset truly contains repeats.
     """
     tr_hash = {}
     for p, _y in train_utts:
-        wav = read_audio(p, c.SAMPLE_RATE)
+        wav = read_audio_fast(p, c.SAMPLE_RATE)
         tr_hash[pcm16_hash(wav)] = abs_norm_path(p)
 
     overlap = []
     for p, _y in test_utts:
-        wav = read_audio(p, c.SAMPLE_RATE)
+        wav = read_audio_fast(p, c.SAMPLE_RATE)
         hh = pcm16_hash(wav)
         if hh in tr_hash:
             overlap.append((tr_hash[hh], abs_norm_path(p)))
@@ -150,16 +151,11 @@ def random_embedding_control(num_items, emb_dim, labels, n_same=20000, n_diff=20
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Rebuild mapping exactly like training
-    classes, class_to_index, train_utts, _val_utts, _ = split_train_folder_by_speaker(
-        c.TRAIN_WAV_ROOT, ratios=(0.9, 0.1, 0.0), seed=37
+    # Use the SAME split logic as training/verify (must be the origin-grouped version)
+    classes, class_to_index, train_utts, _val_utts, test_utts = split_within_speaker(
+        c.DATA_ROOT, ratios=(0.8, 0.1, 0.1), seed=37
     )
     num_classes = len(classes)
-
-    # Build test utterances from CSV (your current setup)
-    test_rows = load_csv(c.TEST_CSV)
-    test_utts = build_utterances(test_rows, c.TEST_WAV_ROOT, class_to_index,
-                                 path_col="file_path", speaker_col="speaker")
 
     # Leakage checks (paths + audio content)
     path_overlap_check(train_utts, test_utts)
@@ -180,14 +176,21 @@ def main():
     model = load_model(num_classes, device)
     test_loader = make_loader(test_utts, fe)
 
-    embs, labels = extract_embeddings(model, test_loader, device)
+    t0 = time.perf_counter()
+    embs, labels = extract_embeddings(model, tqdm(test_loader, desc="Extract embeddings"), device)
+    print(f"[TIME] embedding extraction: {time.perf_counter() - t0:.2f}s")
 
     # Main evaluation at larger scale (reduces “lucky sampling”)
-    same, diff = sample_pairs(labels, n_same=50000, n_diff=50000, seed=37)
+    t0 = time.perf_counter()
+    same, diff = sample_pairs(labels, n_same=30000, n_diff=30000, seed=37)
+    print(f"[TIME] sampling pairs: {time.perf_counter() - t0:.2f}s")
+
     pairs_sanity(labels, same, diff)
 
+    t0 = time.perf_counter()
     same_scores = cosine_scores(embs, same)
     diff_scores = cosine_scores(embs, diff)
+    print(f"[TIME] cosine scoring: {time.perf_counter() - t0:.2f}s")
 
     print("[SCORE STATS] same mean/std:", float(same_scores.mean()), float(same_scores.std()))
     print("[SCORE STATS] diff mean/std:", float(diff_scores.mean()), float(diff_scores.std()))
