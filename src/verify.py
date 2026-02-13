@@ -141,7 +141,7 @@ def leakage_checks(train_utts, test_utts):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default=c.BEST_MODEL_PATH, help="Path to trained model .pt")
-    ap.add_argument("--out-dir", default="emb_outputs", help="Folder to save embeddings/labels")
+    ap.add_argument("--out-dir", default="emb_outputs_batchhard", help="Folder to save embeddings/labels")
     ap.add_argument("--split", default="test", choices=["train", "val", "test"], help="Which split to verify on")
     ap.add_argument("--n-same", type=int, default=20000)
     ap.add_argument("--n-diff", type=int, default=20000)
