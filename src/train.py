@@ -107,7 +107,7 @@ def main():
     val_ds = AudioDataset(val_utts, c.SAMPLE_RATE, fe)
     test_ds = AudioDataset(test_utts, c.SAMPLE_RATE, fe)
 
-    P, K = 16, 4
+    P, K = 12, 5
     train_labels = [lab for _, lab in train_utts]
 
     sampler = PKSampler(train_labels, P=P, K=K, seed=37)
@@ -134,7 +134,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = CNN1DNET(n_feats=c.N_MELS, num_classes=num_classes, emb_dim=c.EMB_DIM, dropout=0.3).to(device)
 
-    triplet_loss = BatchHardTripletLoss(margin=0.2, normalize=True)
+    triplet_loss = BatchHardTripletLoss(margin=0.3, normalize=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=c.LEARNING_RATE, weight_decay=1e-4)
 
     patience = 5
