@@ -2,6 +2,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple, Optional, Union
+from collections import defaultdict
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -80,8 +81,9 @@ def split_by_speaker(root: PathLike,
 def split_within_speaker(root: PathLike, ratios: Tuple[float, float, float] = (0.8, 0.1, 0.1), seed: int = 37
                          ) -> Tuple[List[str], Dict[str, int], List[Utterance], List[Utterance], List[Utterance]]:
     """
-    File-level split inside each speaker folder.
-    Speakers are present in all splits -> valid for CrossEntropy classification.
+    Split within each speaker, but grouped by original recording.
+    Assumes chunk filename contains '__s' (e.g., orig__s000000__e048000.wav).
+    Ensures: no original recording contributes chunks to multiple splits (prevents leakage).
     """
     r_tr, r_va, r_te = ratios
     if abs((r_tr + r_va + r_te) - 1.0) > 1e-6:
@@ -91,6 +93,10 @@ def split_within_speaker(root: PathLike, ratios: Tuple[float, float, float] = (0
     classes, class_to_index = find_classes_from_folders(root)
     rng = random.Random(seed)
 
+    def origin_id(p: Path) -> str:
+        stem = p.stem
+        return stem.split("__s", 1)[0] if "__s" in stem else stem
+
     train_utts: List[Utterance] = []
     val_utts: List[Utterance] = []
     test_utts: List[Utterance] = []
@@ -99,23 +105,35 @@ def split_within_speaker(root: PathLike, ratios: Tuple[float, float, float] = (0
         spk_dir = root / spk
         label = class_to_index[spk]
         files = sorted([p for p in spk_dir.rglob("*.wav") if p.is_file()])
-        if len(files) < 3:
-            train_utts += [(p, label) for p in files]
+
+        groups = defaultdict(list)
+        for p in files:
+            groups[origin_id(p)].append(p)
+
+        origins = sorted(groups.keys())
+        if len(origins) < 3:
+            # too few originals: keep all chunks in train
+            for oid in origins:
+                train_utts += [(p, label) for p in groups[oid]]
             continue
 
-        rng.shuffle(files)
-        n = len(files)
+        rng.shuffle(origins)
+
+        n = len(origins)
         n_tr = max(1, int(n * r_tr))
         n_va = max(1, int(n * r_va))
         n_va = min(n_va, n - n_tr - 1)  # leave at least 1 for test
 
-        tr = files[:n_tr]
-        va = files[n_tr:n_tr + n_va]
-        te = files[n_tr + n_va:]
+        tr_o = origins[:n_tr]
+        va_o = origins[n_tr:n_tr + n_va]
+        te_o = origins[n_tr + n_va:]
 
-        train_utts += [(p, label) for p in tr]
-        val_utts += [(p, label) for p in va]
-        test_utts += [(p, label) for p in te]
+        for oid in tr_o:
+            train_utts += [(p, label) for p in groups[oid]]
+        for oid in va_o:
+            val_utts += [(p, label) for p in groups[oid]]
+        for oid in te_o:
+            test_utts += [(p, label) for p in groups[oid]]
 
     return classes, class_to_index, train_utts, val_utts, test_utts
 
