@@ -1,5 +1,6 @@
 import os
 import csv
+import argparse
 from pathlib import Path
 from collections import defaultdict
 
@@ -9,17 +10,10 @@ from torch.utils.data import DataLoader
 from functools import partial
 
 import constants as c
-from dataset import (
-    AudioDataset,
-    pad_trunc_collate_fn,
-    split_within_speaker)
+from dataset import AudioDataset, pad_trunc_collate_fn, split_within_speaker
 from features import LogMelExtraction
 from model import CNN1DNET
 import metrics
-
-
-BEST_PATH = c.BEST_MODEL_PATH
-OUT_DIR = "emb_outputs_spk50_1h"
 
 
 def _to_int64_labels(labels_any) -> np.ndarray:
@@ -29,10 +23,10 @@ def _to_int64_labels(labels_any) -> np.ndarray:
     return out
 
 
-def load_model(num_classes: int, device: str):
-    # emb_dim can be constant or hardcoded; keep dropout=0 for eval stability
+def load_model(num_classes: int, device: str, ckpt_path: str):
+    # dropout=0 for eval stability
     model = CNN1DNET(n_feats=c.N_MELS, num_classes=num_classes, emb_dim=c.EMB_DIM, dropout=0.0).to(device)
-    state = torch.load(BEST_PATH, map_location=device)
+    state = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(state)
     model.eval()
     return model
@@ -78,7 +72,7 @@ def sample_pairs(labels: np.ndarray, n_same=20000, n_diff=20000, seed=37):
 
     idx_by_label = defaultdict(list)
     for i, spk in enumerate(labels):
-        idx_by_label.setdefault(spk, []).append(i)
+        idx_by_label[spk].append(i)
 
     valid_spk = [k for k, v in idx_by_label.items() if len(v) >= 2]
     if not valid_spk:
@@ -105,7 +99,7 @@ def sample_pairs(labels: np.ndarray, n_same=20000, n_diff=20000, seed=37):
 def cosine_scores(embs: np.ndarray, pairs: np.ndarray):
     a = embs[pairs[:, 0]]
     b = embs[pairs[:, 1]]
-    return np.sum(a * b, axis=1)  # cosine because embeddings are L2-normalized
+    return np.sum(a * b, axis=1)  # cosine if embeddings are L2-normalized
 
 
 def summarize(same_scores, diff_scores):
@@ -114,7 +108,6 @@ def summarize(same_scores, diff_scores):
 
 
 def leakage_checks(train_utts, test_utts):
-    # 1) path overlap
     tr_paths = {os.path.normcase(os.path.abspath(str(p))) for p, _ in train_utts}
     te_paths = {os.path.normcase(os.path.abspath(str(p))) for p, _ in test_utts}
     inter = sorted(tr_paths.intersection(te_paths))
@@ -122,7 +115,6 @@ def leakage_checks(train_utts, test_utts):
     if inter[:5]:
         print("  examples:", inter[:5])
 
-    # 2) chunk-origin overlap (same original recording in both splits)
     # filename format: <origstem>__sXXXXXXX__eXXXXXXX.wav
     def origin_id(path: Path) -> str:
         stem = path.stem
@@ -147,15 +139,23 @@ def leakage_checks(train_utts, test_utts):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ckpt", default=c.BEST_MODEL_PATH, help="Path to trained model .pt")
+    ap.add_argument("--out-dir", default="emb_outputs", help="Folder to save embeddings/labels")
+    ap.add_argument("--split", default="test", choices=["train", "val", "test"], help="Which split to verify on")
+    ap.add_argument("--n-same", type=int, default=20000)
+    ap.add_argument("--n-diff", type=int, default=20000)
+    ap.add_argument("--seed", type=int, default=37)
+    args = ap.parse_args()
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # rebuild the SAME mapping as training
-    classes, class_to_index, train_utts, _val_utts, test_utts = split_within_speaker(
+    classes, class_to_index, train_utts, val_utts, test_utts = split_within_speaker(
         c.DATA_ROOT, ratios=(0.8, 0.1, 0.1), seed=37
     )
     num_classes = len(classes)
 
-    model = load_model(num_classes, device)
+    model = load_model(num_classes, device, args.ckpt)
 
     fe = LogMelExtraction(
         sample_rate=c.SAMPLE_RATE,
@@ -165,30 +165,36 @@ def main():
         n_mels=c.N_MELS,
         f_min=c.FMIN,
         f_max=c.FMAX,
-        eps=c.EPS
+        eps=c.EPS,
     )
 
-    test_loader = make_loader(test_utts, fe)
+    if args.split == "train":
+        utterances = train_utts
+    elif args.split == "val":
+        utterances = val_utts
+    else:
+        utterances = test_utts
 
-    leakage_checks(train_utts, test_utts)
+    loader = make_loader(utterances, fe)
 
-    embs, labels = extract_embeddings(model, test_loader, device)
-    save_embeddings(OUT_DIR, "test", embs, labels)
+    if args.split == "test":
+        leakage_checks(train_utts, test_utts)
 
-    same, diff = sample_pairs(labels, n_same=20000, n_diff=20000, seed=37)
+    embs, labels = extract_embeddings(model, loader, device)
+    save_embeddings(args.out_dir, args.split, embs, labels)
+
+    same, diff = sample_pairs(labels, n_same=args.n_same, n_diff=args.n_diff, seed=args.seed)
     same_scores = cosine_scores(embs, same)
     diff_scores = cosine_scores(embs, diff)
     summarize(same_scores, diff_scores)
 
+    # metrics.compute_roc_auc_eer expects distances where smaller = more similar
     res = metrics.compute_roc_auc_eer(-same_scores, -diff_scores)
     print(f"ROC AUC: {res['auc']:.6f}")
-    print(f"EER: {res['eer']:.6f} @ thr {res['eer_threshold']:.6f} "
-          f"(FPR {res['fpr_at_eer']:.6f}, FNR {res['fnr_at_eer']:.6f})")
-
-    if res["auc"] > 0.95 and res["eer"] < 0.10:
-        print("[VERDICT] Metrics look good for a baseline.")
-    else:
-        print("[VERDICT] Metrics are weak; check data, split, or model.")
+    print(
+        f"EER: {res['eer']:.6f} @ thr {res['eer_threshold']:.6f} "
+        f"(FPR {res['fpr_at_eer']:.6f}, FNR {res['fnr_at_eer']:.6f})"
+    )
 
 
 if __name__ == "__main__":
