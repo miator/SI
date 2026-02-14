@@ -1,3 +1,4 @@
+import json
 import os
 import csv
 import argparse
@@ -188,13 +189,39 @@ def main():
     diff_scores = cosine_scores(embs, diff)
     summarize(same_scores, diff_scores)
 
-    # metrics.compute_roc_auc_eer expects distances where smaller = more similar
     res = metrics.compute_roc_auc_eer(-same_scores, -diff_scores)
     print(f"ROC AUC: {res['auc']:.6f}")
     print(
         f"EER: {res['eer']:.6f} @ thr {res['eer_threshold']:.6f} "
         f"(FPR {res['fpr_at_eer']:.6f}, FNR {res['fnr_at_eer']:.6f})"
     )
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    result = {
+        "task": "verify",
+        "ckpt_path": str(args.ckpt),
+        "out_dir": str(out_dir),
+        "split": str(args.split),
+        "n_same": int(args.n_same),
+        "n_diff": int(args.n_diff),
+        "seed": int(args.seed),
+        "emb_dim": int(c.EMB_DIM),
+        "same_mean": float(same_scores.mean()),
+        "same_std": float(same_scores.std()),
+        "diff_mean": float(diff_scores.mean()),
+        "diff_std": float(diff_scores.std()),
+        "auc": float(res["auc"]),
+        "eer": float(res["eer"]),
+        "eer_thr": float(res["eer_threshold"]),
+        "fpr_at_eer": float(res["fpr_at_eer"]),
+        "fnr_at_eer": float(res["fnr_at_eer"]),
+    }
+
+    with open(out_dir / "result.json", "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2)
+    print(f"[SAVED] {out_dir / 'result.json'}")
 
 
 if __name__ == "__main__":
