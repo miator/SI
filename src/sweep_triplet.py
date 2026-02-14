@@ -156,7 +156,7 @@ def train_one(run_dir: Path, tag: str, P: int, K: int, margin: float, lr_mult: f
         collate_fn=collate,
         num_workers=4,
         prefetch_factor=4,
-        persistent_workers=True,
+        persistent_workers=True
     )
 
     val_loader = DataLoader(
@@ -164,7 +164,9 @@ def train_one(run_dir: Path, tag: str, P: int, K: int, margin: float, lr_mult: f
         batch_size=c.BATCH_SIZE,
         shuffle=False,
         collate_fn=collate,
-        num_workers=0,
+        num_workers=4,
+        prefetch_factor=4,
+        persistent_workers=True
     )
 
     test_loader = DataLoader(
@@ -172,7 +174,9 @@ def train_one(run_dir: Path, tag: str, P: int, K: int, margin: float, lr_mult: f
         batch_size=c.BATCH_SIZE,
         shuffle=False,
         collate_fn=collate,
-        num_workers=0,
+        num_workers=4,
+        prefetch_factor=4,
+        persistent_workers=True
     )
 
     model = CNN1DNET(n_feats=c.N_MELS, num_classes=num_classes, emb_dim=c.EMB_DIM, dropout=0.3).to(device)
@@ -243,7 +247,6 @@ def main():
     runs_root = Path("runs/spk50_1h")
     epochs = 10
 
-    # small, high-value grid (8 runs)
     pk_list = [(16, 4), (12, 5), (8, 8)]
     margins = [0.30, 0.35]
     lr_mults = [1.0, 0.5]
