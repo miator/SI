@@ -1,4 +1,3 @@
-import json
 import time
 from pathlib import Path
 from functools import partial
@@ -133,31 +132,15 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = CNN1DNET(n_feats=c.N_MELS, num_classes=num_classes, emb_dim=c.EMB_DIM, dropout=0.3).to(device)
 
-    triplet_loss = BatchHardTripletLoss(margin=0.3, normalize=True)
+    triplet_loss = BatchHardTripletLoss(margin=0.35, normalize=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=c.LEARNING_RATE, weight_decay=1e-4)
-    history: list[dict] = []
 
     patience = 5
     min_delta = 1e-4
     best_val_loss = float("inf")
     bad_epochs = 0
-
-    margin = float(getattr(triplet_loss, "margin", 0.0))
-    wd = float(optimizer.param_groups[0].get("weight_decay", 0.0))
-    run_dir = Path(c.RUNS_DIR) / f"bh_P{P}K{K}_m{margin}_e{c.EPOCHS}_lr{c.LEARNING_RATE}_wd{wd}_emb{c.EMB_DIM}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    with open(run_dir / "config.json", "w", encoding="utf-8") as f:
-        json.dump({
-            "P": P, "K": K, "margin": margin, "epochs": c.EPOCHS,
-            "lr": c.LEARNING_RATE, "weight_decay": wd, "emb_dim": c.EMB_DIM,
-            "dropout": 0.3, "seed": 37,
-        }, f, indent=2)
-
-    best_path = run_dir / "best.pt"
-    train_result_path = run_dir / "train_result.json"
-
-    best_epoch = -1
+    best_path = Path(c.BEST_MODEL_PATH)
+    best_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ---- TRAIN LOOP ----
     for epoch in range(c.EPOCHS):
@@ -167,19 +150,8 @@ def main():
         va_loss = run_epoch_batchhard(model, val_loader, triplet_loss, optimizer, device, train=False, desc="val")
 
         elapsed = time.perf_counter() - start
-        history.append({
-            "epoch": epoch + 1,
-            "train_loss": float(tr_loss),
-            "val_loss": float(va_loss),
-            "time_sec": float(elapsed),
-            "lr": float(optimizer.param_groups[0].get("lr", c.LEARNING_RATE)),
-            "weight_decay": float(optimizer.param_groups[0].get("weight_decay", 0.0)),
-        })
-
-        improved = va_loss < best_val_loss - min_delta
-        if improved:
+        if va_loss < best_val_loss - min_delta:
             best_val_loss = va_loss
-            best_epoch = epoch + 1
             bad_epochs = 0
             torch.save(model.state_dict(), best_path)
         else:
@@ -188,11 +160,11 @@ def main():
                 print(f"early stop at epoch {epoch + 1}")
                 break
 
-        mark = " *BEST*" if improved else ""
         print(
-            f"epoch {epoch + 1:02d}/{c.EPOCHS} | "
-            f"train {tr_loss:.4f} | val {va_loss:.4f} | "
-            f"time {elapsed:.2f}s{mark}"
+            f"epoch {epoch + 1}/{c.EPOCHS} | "
+            f"train triplet loss {tr_loss:.4f} | "
+            f"val triplet loss {va_loss:.4f} | "
+            f"time {elapsed:.2f}s"
         )
 
     # ---- TEST ----
@@ -201,31 +173,6 @@ def main():
     te_loss = run_epoch_batchhard(model, test_loader, triplet_loss, optimizer, device, train=False, desc="test")
     t_test = time.perf_counter() - t0
     print(f"test triplet loss {te_loss:.4f} time {t_test:.2f}s")
-
-    result = {
-        "task": "train_triplet",
-        "device": device,
-        "data_root": str(c.DATA_ROOT),
-        "split_seed": 37,
-        "model": "CNN1DNET",
-        "emb_dim": int(c.EMB_DIM),
-        "features": "LogMel",
-        "P": int(P),
-        "K": int(K),
-        "margin": float(getattr(triplet_loss, "margin", 0.0)),
-        "epochs_planned": int(c.EPOCHS),
-        "epochs_ran": int(len(history)),
-        "best_val_loss": float(best_val_loss),
-        "best_epoch": int(best_epoch),
-        "best_ckpt_path": str(best_path),
-        "test_loss": float(te_loss),
-        "test_time_sec": float(t_test),
-        "history": history,
-    }
-
-    with open(train_result_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2)
-    print(f"[SAVED] {train_result_path}")
 
 
 if __name__ == "__main__":
