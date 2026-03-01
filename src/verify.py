@@ -1,6 +1,5 @@
 import os
-import csv
-import argparse
+# import argparse
 from pathlib import Path
 from collections import defaultdict
 
@@ -10,7 +9,7 @@ from torch.utils.data import DataLoader
 from functools import partial
 
 import constants as c
-from dataset import AudioDataset, pad_trunc_collate_fn, split_within_speaker
+from dataset import AudioDataset, pad_trunc_collate_fn, split_seen_unseen_speakers
 from features import LogMelExtraction
 from model import CNN1DNET
 import metrics
@@ -23,10 +22,10 @@ def _to_int64_labels(labels_any) -> np.ndarray:
     return out
 
 
-def load_model(num_classes: int, device: str, ckpt_path: str):
-    # dropout=0 for eval stability
-    model = CNN1DNET(n_feats=c.N_MELS, num_classes=num_classes, emb_dim=c.EMB_DIM, dropout=0.0).to(device)
+def load_model(device: str, ckpt_path: str):
     state = torch.load(ckpt_path, map_location=device)
+    num_classes = state["classifier.weight"].shape[0]
+    model = CNN1DNET(n_feats=c.N_MELS, num_classes=num_classes, emb_dim=c.EMB_DIM, dropout=0.0).to(device)
     model.load_state_dict(state)
     model.eval()
     return model
@@ -52,18 +51,6 @@ def extract_embeddings(model, loader, device: str):
     embs = torch.cat(embs, dim=0).numpy().astype(np.float32)
     labels = _to_int64_labels(labels)
     return embs, labels
-
-
-def save_embeddings(out_dir: str, split: str, embs: np.ndarray, labels: np.ndarray):
-    os.makedirs(out_dir, exist_ok=True)
-    np.save(os.path.join(out_dir, f"{split}_embeddings.npy"), embs)
-
-    csv_path = os.path.join(out_dir, f"{split}_labels.csv")
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["row_idx", "spk_id"])
-        for i, spk in enumerate(labels):
-            w.writerow([i, spk])
 
 
 def sample_pairs(labels: np.ndarray, n_same=20000, n_diff=20000, seed=37):
@@ -139,23 +126,28 @@ def leakage_checks(train_utts, test_utts):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", default=c.BEST_MODEL_PATH, help="Path to trained model .pt")
-    ap.add_argument("--out-dir", default="emb_outputs_bh_P12K5_m0.35_e30", help="Folder to save embeddings/labels")
-    ap.add_argument("--split", default="test", choices=["train", "val", "test"], help="Which split to verify on")
-    ap.add_argument("--n-same", type=int, default=20000)
-    ap.add_argument("--n-diff", type=int, default=20000)
-    ap.add_argument("--seed", type=int, default=37)
-    args = ap.parse_args()
+    # ap = argparse.ArgumentParser()
+    # ap.add_argument("--ckpt", default=c.BEST_MODEL_PATH, help="Path to trained model .pt")
+    # ap.add_argument("--out-dir", default="emb_outputs_bh_P12K5_m0.35_e30", help="Folder to save embeddings/labels")
+    # ap.add_argument("--split", default="test", choices=["train", "val", "test"], help="Which split to verify on")
+    # ap.add_argument("--n-same", type=int, default=20000)
+    # ap.add_argument("--n-diff", type=int, default=20000)
+    # ap.add_argument("--seed", type=int, default=37)
+    # args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    classes, class_to_index, train_utts, val_utts, test_utts = split_within_speaker(
-        c.DATA_ROOT, ratios=(0.8, 0.1, 0.1), seed=37
+    seen_classes, seen_class_to_index, train_utts, val_utts, unseen_classes, unseen_class_to_index, test_utts = (
+        split_seen_unseen_speakers(
+            c.DATA_ROOT,
+            ratios_seen_train_val=(0.9, 0.1),
+            test_speakers_ratio=0.2,
+            seed=37
+        )
     )
-    num_classes = len(classes)
+    # num_classes = len(seen_classes)
 
-    model = load_model(num_classes, device, args.ckpt)
+    model = load_model(device, c.BEST_MODEL_PATH)
 
     fe = LogMelExtraction(
         sample_rate=c.SAMPLE_RATE,
@@ -165,25 +157,24 @@ def main():
         n_mels=c.N_MELS,
         f_min=c.FMIN,
         f_max=c.FMAX,
-        eps=c.EPS,
+        eps=c.EPS
     )
 
-    if args.split == "train":
-        utterances = train_utts
-    elif args.split == "val":
-        utterances = val_utts
-    else:
-        utterances = test_utts
+    # if args.split == "train":
+    #     test_utts = train_utts
+    # elif args.split == "val":
+    #     test_utts = val_utts
+    # else:
+    #     test_utts = test_utts
 
-    loader = make_loader(utterances, fe)
+    loader = make_loader(test_utts, fe)
 
-    if args.split == "test":
-        leakage_checks(train_utts, test_utts)
+    # if args.split == "test":
+    leakage_checks(train_utts, test_utts)
 
     embs, labels = extract_embeddings(model, loader, device)
-    save_embeddings(args.out_dir, args.split, embs, labels)
 
-    same, diff = sample_pairs(labels, n_same=args.n_same, n_diff=args.n_diff, seed=args.seed)
+    same, diff = sample_pairs(labels, n_same=20000, n_diff=20000, seed=37)
     same_scores = cosine_scores(embs, same)
     diff_scores = cosine_scores(embs, diff)
     summarize(same_scores, diff_scores)
