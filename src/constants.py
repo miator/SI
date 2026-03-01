@@ -16,7 +16,6 @@ EMB_DIM = 192
 EPS = 1e-6
 
 RUNS_DIR = "runs"
-BEST_MODEL_PATH = "runs/best.pt"
+BEST_MODEL_PATH = f"{RUNS_DIR}/best.pt"
 
-DATA_ROOT = r"C:\Users\User\Desktop\50spk_1h\pcm16_16k_chunks_3s"
-# ALL_CHUNKS_CSV = r"C:\Users\User\Desktop\50spk_1h\all_chunks_csv"
+DATA_ROOT = r"C:\Users\User\Desktop\data\50spk_1h\pcm16_16k_chunks_3s"
