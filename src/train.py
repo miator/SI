@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import constants as c
-from dataset import (AudioDataset, split_within_speaker, pad_trunc_collate_fn)
+from dataset import (AudioDataset, split_seen_unseen_speakers, pad_trunc_collate_fn)
 from features import LogMelExtraction
 from model import CNN1DNET
 from triplet import BatchHardTripletLoss
@@ -80,15 +80,19 @@ def run_epoch_batchhard(model, loader, triplet_loss, optimizer, device, train: b
 
 
 def main():
-    classes, class_to_index, train_utts, val_utts, test_utts = split_within_speaker(
-        c.DATA_ROOT, ratios=(0.8, 0.1, 0.1), seed=37
+    seen_classes, seen_class_to_index, train_utts, val_utts, unseen_classes, unseen_class_to_index, test_utts = (
+        split_seen_unseen_speakers(
+            c.DATA_ROOT,
+            ratios_seen_train_val=(0.9, 0.1),
+            test_speakers_ratio=0.2,
+            seed=37
+        )
     )
 
-    num_classes = len(classes)
-    print("Speakers:", num_classes)
+    num_classes = len(seen_classes)  # IMPORTANT: classifier head matches SEEN speakers only
+    print("Seen speakers (train/val):", len(seen_classes))
     print("Train files:", len(train_utts))
     print("Val files:", len(val_utts))
-    print("Test files:", len(test_utts))
 
     fe = LogMelExtraction(
         sample_rate=c.SAMPLE_RATE,
@@ -103,7 +107,6 @@ def main():
 
     train_ds = AudioDataset(train_utts, c.SAMPLE_RATE, fe)
     val_ds = AudioDataset(val_utts, c.SAMPLE_RATE, fe)
-    test_ds = AudioDataset(test_utts, c.SAMPLE_RATE, fe)
 
     P, K = 12, 5
     train_labels = [lab for _, lab in train_utts]
@@ -124,14 +127,9 @@ def main():
         val_ds, batch_size=c.BATCH_SIZE, shuffle=False, collate_fn=collate,
         num_workers=4, prefetch_factor=4, persistent_workers=True
     )
-    test_loader = DataLoader(
-        test_ds, batch_size=c.BATCH_SIZE, shuffle=False, collate_fn=collate,
-        num_workers=4, prefetch_factor=4, persistent_workers=True
-    )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = CNN1DNET(n_feats=c.N_MELS, num_classes=num_classes, emb_dim=c.EMB_DIM, dropout=0.3).to(device)
-
     triplet_loss = BatchHardTripletLoss(margin=0.35, normalize=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=c.LEARNING_RATE, weight_decay=1e-4)
 
@@ -166,13 +164,6 @@ def main():
             f"val triplet loss {va_loss:.4f} | "
             f"time {elapsed:.2f}s"
         )
-
-    # ---- TEST ----
-    model.load_state_dict(torch.load(best_path, map_location=device))
-    t0 = time.perf_counter()
-    te_loss = run_epoch_batchhard(model, test_loader, triplet_loss, optimizer, device, train=False, desc="test")
-    t_test = time.perf_counter() - t0
-    print(f"test triplet loss {te_loss:.4f} time {t_test:.2f}s")
 
 
 if __name__ == "__main__":
