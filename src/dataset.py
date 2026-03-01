@@ -30,7 +30,7 @@ def build_utterances_from_train_folder(root: PathLike,
         if spk not in class_to_index:
             continue
         label = class_to_index[spk]
-        for wav_path in sorted(spk_dir.rglob("*.")):
+        for wav_path in sorted(spk_dir.rglob("*")):
             if wav_path.suffix.lower() in exts:
                 utterances.append((wav_path, label))
     return utterances
@@ -78,32 +78,57 @@ def split_by_speaker(root: PathLike,
     return classes, class_to_index, train_utts, val_utts, test_utts
 
 
-def split_within_speaker(root: PathLike, ratios: Tuple[float, float, float] = (0.8, 0.1, 0.1), seed: int = 37
-                         ) -> Tuple[List[str], Dict[str, int], List[Utterance], List[Utterance], List[Utterance]]:
+def split_seen_unseen_speakers(
+    root: PathLike,
+    ratios_seen_train_val: Tuple[float, float] = (0.9, 0.1),
+    test_speakers_ratio: float = 0.2,
+    seed: int = 37,
+) -> Tuple[
+    List[str], Dict[str, int], List[Utterance], List[Utterance], List[str], Dict[str, int], List[Utterance]
+]:
     """
-    Split within each speaker, but grouped by original recording.
-    Assumes chunk filename contains '__s' (e.g., orig__s000000__e048000.wav).
-    Ensures: no original recording contributes chunks to multiple splits (prevents leakage).
-    """
-    r_tr, r_va, r_te = ratios
-    if abs((r_tr + r_va + r_te) - 1.0) > 1e-6:
-        raise ValueError("ratios must sum to 1.0")
+    Speaker-disjoint evaluation:
+      - Train/Val use SEEN speakers only (classifier label space = seen speakers).
+      - Test uses UNSEEN speakers only (for verification; not for classifier accuracy).
+    Also prevents leakage between train and val by grouping chunks by original recording within each seen speaker.
 
+    Returns:
+      seen_classes, seen_class_to_index, train_utts, val_utts,
+      unseen_classes, unseen_class_to_index, test_utts
+    """
     root = Path(root)
-    classes, class_to_index = find_classes_from_folders(root)
+    all_classes, _ = find_classes_from_folders(root)
+
     rng = random.Random(seed)
+    speakers = all_classes[:]
+    rng.shuffle(speakers)
+
+    n_total = len(speakers)
+    n_test = max(1, int(n_total * test_speakers_ratio))
+    n_test = min(n_test, n_total - 1)  # keep at least 1 seen speaker
+
+    unseen_classes = sorted(speakers[:n_test])
+    seen_classes = sorted(speakers[n_test:])
+
+    seen_class_to_index = {spk: i for i, spk in enumerate(seen_classes)}
+    unseen_class_to_index = {spk: i for i, spk in enumerate(unseen_classes)}
 
     def origin_id(p: Path) -> str:
         stem = p.stem
         return stem.split("__s", 1)[0] if "__s" in stem else stem
 
+    r_tr, r_va = ratios_seen_train_val
+    if abs((r_tr + r_va) - 1.0) > 1e-6:
+        raise ValueError("ratios_seen_train_val must sum to 1.0")
+
     train_utts: List[Utterance] = []
     val_utts: List[Utterance] = []
     test_utts: List[Utterance] = []
 
-    for spk in classes:
+    # ---- seen speakers: split by original recording into train/val ----
+    for spk in seen_classes:
         spk_dir = root / spk
-        label = class_to_index[spk]
+        label = seen_class_to_index[spk]
         files = sorted([p for p in spk_dir.rglob("*.wav") if p.is_file()])
 
         groups = defaultdict(list)
@@ -111,31 +136,34 @@ def split_within_speaker(root: PathLike, ratios: Tuple[float, float, float] = (0
             groups[origin_id(p)].append(p)
 
         origins = sorted(groups.keys())
-        if len(origins) < 3:
-            # too few originals: keep all chunks in train
-            for oid in origins:
-                train_utts += [(p, label) for p in groups[oid]]
+        if len(origins) == 0:
             continue
 
         rng.shuffle(origins)
 
         n = len(origins)
         n_tr = max(1, int(n * r_tr))
-        n_va = max(1, int(n * r_va))
-        n_va = min(n_va, n - n_tr - 1)  # leave at least 1 for test
+        n_tr = min(n_tr, n - 1) if n >= 2 else 1
 
         tr_o = origins[:n_tr]
-        va_o = origins[n_tr:n_tr + n_va]
-        te_o = origins[n_tr + n_va:]
+        va_o = origins[n_tr:]
 
         for oid in tr_o:
             train_utts += [(p, label) for p in groups[oid]]
         for oid in va_o:
             val_utts += [(p, label) for p in groups[oid]]
-        for oid in te_o:
-            test_utts += [(p, label) for p in groups[oid]]
 
-    return classes, class_to_index, train_utts, val_utts, test_utts
+    # ---- unseen speakers: all go to test (labels are only for pairing in verification) ----
+    for spk in unseen_classes:
+        spk_dir = root / spk
+        label = unseen_class_to_index[spk]  # used only inside verify pairing
+        files = sorted([p for p in spk_dir.rglob("*.wav") if p.is_file()])
+        test_utts += [(p, label) for p in files]
+
+    return (
+        seen_classes, seen_class_to_index, train_utts, val_utts,
+        unseen_classes, unseen_class_to_index, test_utts
+    )
 
 
 def read_audio(path: PathLike, sample_rate: int) -> torch.Tensor:
