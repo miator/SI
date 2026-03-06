@@ -1,146 +1,272 @@
 from __future__ import annotations
 import csv
+import os
 import time
-from tqdm import tqdm
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import List, Tuple, Dict, Any
 
+from tqdm import tqdm
 import torch
 import torchaudio
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+SRC_STD_WAV_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech-train-clean-100/LibriSpeech_standardized")
+OUT_CHUNKS_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech-train-clean-100/LibriSpeech_standardized_chunks_3s")
+
+WRITE_DUPLICATE_PCM16_TREE = True
+
+SPLITS = ["train", "val", "test"]
+
+TARGET_SR = 16000
+CHUNK_SECONDS = 3.0
+HOP_SECONDS = 3.0  # no overlap
+CHUNK_LEN = int(round(TARGET_SR * CHUNK_SECONDS))
+HOP_LEN = int(round(TARGET_SR * HOP_SECONDS))
+
+# Multiprocessing workers (CPU)
+MAX_WORKERS = max(1, (os.cpu_count() or 4) - 1)
 
 
 @dataclass(frozen=True)
-class ChunkCfg:
-    sample_rate: int = 16000
-    chunk_seconds: float = 3.0
-    hop_seconds: float = 3.0
-    # min_tail_seconds: float = 2.0
-    mono: bool = True
+class ChunkRow:
+    split: str
+    speaker_id: str
+    book_id: str
+    utt_id: str
+    chunk_idx: int
+    start_sample: int
+    end_sample: int
+    sample_rate: int
+    channels: int
+    num_samples: int
+    duration_sec: float
+    src_wav_path: str
+    out_wav_path: str
+    out_pcm16_path: str
 
 
-def load_mono_resample(path: Path, target_sr: int, mono: bool) -> torch.Tensor:
+def load_wav_mono_16k(path: Path) -> torch.Tensor:
     wav, sr = torchaudio.load(str(path))  # (C, T)
-    if sr != target_sr:
-        wav = torchaudio.functional.resample(wav, sr, target_sr)
-    if mono and wav.dim() == 2:
-        wav = wav.mean(dim=0, keepdim=True)  # (1, T)
-    return wav.to(torch.float32)  # (1, T) float32
+    if wav.dim() == 1:
+        wav = wav.unsqueeze(0)
+    if wav.size(0) > 1:
+        wav = wav.mean(dim=0, keepdim=True)
+    if sr != TARGET_SR:
+        wav = torchaudio.functional.resample(wav, sr, TARGET_SR)
+    return wav.to(torch.float32)
 
 
-def iter_chunks(wav_1ch: torch.Tensor, cfg: ChunkCfg) -> Iterable[Tuple[int, int, torch.Tensor]]:
+def save_pcm16_wav(path: Path, wav_1ch: torch.Tensor, sr: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wav_1ch = torch.clamp(wav_1ch, -1.0, 1.0)
+    torchaudio.save(str(path), wav_1ch, sr, encoding="PCM_S", bits_per_sample=16)
+
+
+def iter_full_chunks(wav_1ch: torch.Tensor) -> List[Tuple[int, int, torch.Tensor]]:
     """
-    Yields (start_sample, end_sample, chunk_tensor) where chunk_tensor is (1, chunk_len).
-    Pads are NOT used; only full chunks plus optional last tail chunk.
+    Return list of (start, end, chunk_tensor) for full non-overlapping chunks only.
+    Discards tails; no padding.
     """
     assert wav_1ch.dim() == 2 and wav_1ch.size(0) == 1
     T = int(wav_1ch.size(1))
+    if T < CHUNK_LEN:
+        return []
 
-    chunk_len = int(round(cfg.chunk_seconds * cfg.sample_rate))
-    hop = int(round(cfg.hop_seconds * cfg.sample_rate))
-    # min_tail = int(round(cfg.min_tail_seconds * cfg.sample_rate))
-
-    if T < chunk_len:
-        return  # skip too-short files
-
-    starts = list(range(0, T - chunk_len + 1, hop))
-
-    # optional last chunk to cover tail
-    # tail = T - (starts[-1] + chunk_len) if starts else T - chunk_len
-    # if tail >= min_tail:
-    #     last_start = T - chunk_len
-    #     if not starts or last_start != starts[-1]:
-    #         starts.append(last_start)
-
-    for s in starts:
-        e = s + chunk_len
-        yield s, e, wav_1ch[:, s:e]
+    chunks = []
+    # Non-overlapping: starts = 0, CHUNK_LEN, 2*CHUNK_LEN, ...
+    for s in range(0, T - CHUNK_LEN + 1, HOP_LEN):
+        e = s + CHUNK_LEN
+        chunks.append((s, e, wav_1ch[:, s:e]))
+    return chunks
 
 
-def chunk_dataset(
-    src_root: Path,
-    out_root: Path,
-    cfg: ChunkCfg,
-    manifest_csv: Path,
-) -> None:
-
+# WORKER: PROCESS ONE UTTERANCE FILE
+def process_one_file(task: Dict[str, Any]) -> List[ChunkRow]:
     """
-    src_root/
-      Speaker_0000/*.wav
-      Speaker_0001/*.wav
-    out_root/
-      Speaker_0000/<origstem>__s000000__e048000.wav
-      ...
-    manifest_csv columns: utt_id, filepath, speaker
+    Worker executed in a separate process.
+    Reads one utterance WAV, produces and writes chunk WAVs, returns metadata rows.
     """
+    split = task["split"]
+    speaker_id = task["speaker_id"]
+    book_id = task["book_id"]
+    utt_id = task["utt_id"]
+    src_path = Path(task["src_path"])
 
-    t0_global = time.perf_counter()
+    out_wav_dir = OUT_CHUNKS_ROOT / "wav" / split / speaker_id
+    out_pcm16_dir = OUT_CHUNKS_ROOT / "pcm16" / split / speaker_id
 
-    src_root = Path(src_root)
-    out_root = Path(out_root)
-    out_root.mkdir(parents=True, exist_ok=True)
-    manifest_csv.parent.mkdir(parents=True, exist_ok=True)
+    wav = load_wav_mono_16k(src_path)
+    chunks = iter_full_chunks(wav)
+    if not chunks:
+        return []
 
-    rows = []
+    rows: List[ChunkRow] = []
 
-    speaker_dirs = sorted([p for p in src_root.iterdir() if p.is_dir()], key=lambda p: p.name)
+    for idx, (s, e, chunk) in enumerate(chunks):
+        out_name = f"{utt_id}_c{idx:04d}.wav"
 
-    total_chunks = 0
+        out_wav_path = out_wav_dir / out_name
+        save_pcm16_wav(out_wav_path, chunk, TARGET_SR)
 
-    for spk_dir in tqdm(speaker_dirs, desc="Speakers"):
-        t0_spk = time.perf_counter()
+        # Optional duplicate tree
+        out_pcm16_path_str = ""
+        if WRITE_DUPLICATE_PCM16_TREE:
+            out_pcm16_path = out_pcm16_dir / out_name
+            save_pcm16_wav(out_pcm16_path, chunk, TARGET_SR)
+            out_pcm16_path_str = str(out_pcm16_path)
 
-        spk = spk_dir.name
-        (out_root / spk).mkdir(parents=True, exist_ok=True)
+        rows.append(
+            ChunkRow(
+                split=split,
+                speaker_id=speaker_id,
+                book_id=book_id,
+                utt_id=utt_id,
+                chunk_idx=idx,
+                start_sample=s,
+                end_sample=e,
+                sample_rate=TARGET_SR,
+                channels=1,
+                num_samples=CHUNK_LEN,
+                duration_sec=CHUNK_SECONDS,
+                src_wav_path=str(src_path),
+                out_wav_path=str(out_wav_path),
+                out_pcm16_path=out_pcm16_path_str,
+            )
+        )
 
-        wav_files = sorted([p for p in spk_dir.rglob("*.wav") if p.is_file()])
+    return rows
 
-        spk_chunks = 0
 
-        for wav_path in wav_files:
-            wav = load_mono_resample(wav_path, cfg.sample_rate, cfg.mono)
+# 4) BUILD TASK LIST FROM STANDARDIZED TREE
+def build_tasks() -> List[Dict[str, Any]]:
+    """
+    Scan SRC_STD_WAV_ROOT for utterances:
+      SRC_STD_WAV_ROOT/<split>/<speaker>/<book>/<utt>.wav
+    Return a list of dict tasks with extracted ids.
+    """
+    tasks: List[Dict[str, Any]] = []
 
-            for s, e, chunk in iter_chunks(wav, cfg):
-                out_name = f"{wav_path.stem}__s{s:07d}__e{e:07d}.wav"
-                out_path = out_root / spk / out_name
+    for split in SPLITS:
+        split_dir = SRC_STD_WAV_ROOT / split
+        if not split_dir.exists():
+            raise FileNotFoundError(f"Missing split directory: {split_dir}")
 
-                torchaudio.save(str(out_path), chunk, cfg.sample_rate)
+        # speaker folders directly under split
+        speaker_dirs = sorted([p for p in split_dir.iterdir() if p.is_dir()], key=lambda p: p.name)
 
-                utt_id = out_path.stem
-                rel_path = out_path.as_posix()
-                rows.append((utt_id, rel_path, spk))
+        for spk_dir in speaker_dirs:
+            speaker_id = spk_dir.name
+            # book folders under speaker
+            book_dirs = sorted([p for p in spk_dir.iterdir() if p.is_dir()], key=lambda p: p.name)
 
-                spk_chunks += 1
-                total_chunks += 1
+            for book_dir in book_dirs:
+                book_id = book_dir.name
+                wav_files = sorted([p for p in book_dir.glob("*.wav") if p.is_file()])
 
-        t_spk = time.perf_counter() - t0_spk
-        print(f"[{spk}] chunks: {spk_chunks} | time: {t_spk:.2f}s")
+                for wav_path in wav_files:
+                    utt_id = wav_path.stem
+                    tasks.append(
+                        {
+                            "split": split,
+                            "speaker_id": speaker_id,
+                            "book_id": book_id,
+                            "utt_id": utt_id,
+                            "src_path": str(wav_path),
+                        }
+                    )
 
-    with open(manifest_csv, "w", newline="", encoding="utf-8") as f:
+    return tasks
+
+
+# 5) MAIN CHUNKING PIPELINE
+def main() -> None:
+    t0 = time.perf_counter()
+
+    OUT_CHUNKS_ROOT.mkdir(parents=True, exist_ok=True)
+    (OUT_CHUNKS_ROOT / "wav").mkdir(parents=True, exist_ok=True)
+    if WRITE_DUPLICATE_PCM16_TREE:
+        (OUT_CHUNKS_ROOT / "pcm16").mkdir(parents=True, exist_ok=True)
+
+    tasks = build_tasks()
+    print("SRC_STD_WAV_ROOT:", SRC_STD_WAV_ROOT)
+    print("OUT_CHUNKS_ROOT:", OUT_CHUNKS_ROOT)
+    print("Utterances found:", len(tasks))
+    print("MAX_WORKERS:", MAX_WORKERS)
+
+    all_rows: List[ChunkRow] = []
+    failures: List[Tuple[str, str]] = []
+    produced_chunks = 0
+
+    # Multiprocessing over utterances
+    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = [ex.submit(process_one_file, t) for t in tasks]
+
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Chunking"):
+            try:
+                rows = fut.result()
+                if rows:
+                    all_rows.extend(rows)
+                    produced_chunks += len(rows)
+            except Exception as e:
+                failures.append(("<worker>", repr(e)))
+
+    # Write metadata CSV (one file for all splits)
+    meta_csv = OUT_CHUNKS_ROOT / "chunks_metadata.csv"
+    with meta_csv.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["utt_id", "filepath", "speaker"])
-        w.writerows(rows)
+        w.writerow(
+            [
+                "split",
+                "speaker_id",
+                "book_id",
+                "utt_id",
+                "chunk_idx",
+                "start_sample",
+                "end_sample",
+                "sample_rate",
+                "channels",
+                "num_samples",
+                "duration_sec",
+                "src_wav_path",
+                "out_wav_path",
+                "out_pcm16_path",
+            ]
+        )
+        for r in all_rows:
+            w.writerow(
+                [
+                    r.split,
+                    r.speaker_id,
+                    r.book_id,
+                    r.utt_id,
+                    r.chunk_idx,
+                    r.start_sample,
+                    r.end_sample,
+                    r.sample_rate,
+                    r.channels,
+                    r.num_samples,
+                    f"{r.duration_sec:.3f}",
+                    r.src_wav_path,
+                    r.out_wav_path,
+                    r.out_pcm16_path,
+                ]
+            )
 
-    t_total = time.perf_counter() - t0_global
-    print(f"\nTotal chunks: {total_chunks}")
-    print(f"Total time: {t_total:.2f}s")
-    print(f"Avg time per chunk: {t_total / max(total_chunks,1):.4f}s")
+    dt = time.perf_counter() - t0
+    print("\nDONE chunking.")
+    print("Chunks produced:", produced_chunks)
+    print("Metadata:", meta_csv)
+    print("Failures:", len(failures))
+    if failures[:10]:
+        print("Failure examples:")
+        for p, err in failures[:10]:
+            print(" ", p)
+            print("   ", err)
+    print("Time:", f"{dt:.2f}s")
+    if produced_chunks > 0:
+        print("Avg time per chunk:", f"{dt / produced_chunks:.6f}s")
 
 
 if __name__ == "__main__":
-    SRC = Path(r"C:\Users\User\Desktop\50spk_1h\pcm16_16k")
-    OUT = Path(r"C:\Users\User\Desktop\50spk_1h\pcm16_16k_chunks_3s")
-    MANIFEST = OUT / "all_chunks.csv"
-
-    cfg = ChunkCfg(
-        sample_rate=16000,
-        chunk_seconds=3.0,
-        hop_seconds=3.0,
-        # min_tail_seconds=2.0,
-        mono=True,
-    )
-
-    chunk_dataset(SRC, OUT, cfg, MANIFEST)
-    print("Done.")
-    print("Chunks saved to:", OUT)
-    print("Manifest saved to:", MANIFEST)
+    main()
