@@ -1,153 +1,141 @@
-import os
-# import argparse
-from pathlib import Path
+import random
 from collections import defaultdict
-
-import numpy as np
-import torch
-from torch.utils.data import DataLoader
 from functools import partial
+from pathlib import Path
+
+import torch
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
 
 import constants as c
-from dataset import AudioDataset, pad_trunc_collate_fn, split_seen_unseen_speakers
+from dataset import scan_split, build_label_map, read_audio_fast
 from features import LogMelExtraction
 from model import CNN1DNET
-import metrics
+from metrics import compute_roc_auc_eer
+
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
 
-def _to_int64_labels(labels_any) -> np.ndarray:
-    out = np.empty(len(labels_any), dtype=np.int64)
-    for i, v in enumerate(labels_any):
-        out[i] = int(v[0]) if isinstance(v, (tuple, list)) else int(v)
-    return out
+class VerificationDataset(Dataset):
+    """
+    Dataset for embedding extraction on verification splits.
+    Returns feature tensor, original speaker_id, and path.
+    """
+    def __init__(self, utterances, sample_rate: int, feature_extractor):
+        self.utterances = list(utterances)
+        self.sample_rate = sample_rate
+        self.fe = feature_extractor
+
+    def __len__(self) -> int:
+        return len(self.utterances)
+
+    def __getitem__(self, idx: int):
+        u = self.utterances[idx]
+        wav = read_audio_fast(u.path, self.sample_rate)
+        feat = self.fe(wav)
+        return feat, u.speaker_id, str(u.path)
 
 
-def load_model(device: str, ckpt_path: str):
-    state = torch.load(ckpt_path, map_location=device)
-    num_classes = state["classifier.weight"].shape[0]
-    model = CNN1DNET(n_feats=c.N_MELS, num_classes=num_classes, emb_dim=c.EMB_DIM, dropout=0.0).to(device)
-    model.load_state_dict(state)
-    model.eval()
-    return model
+def pad_trunc_collate_verify(batch, max_frames: int):
+    feats, speaker_ids, paths = zip(*batch)
+    f = feats[0].shape[1]
+    out = torch.zeros((len(feats), max_frames, f), dtype=feats[0].dtype)
+    lengths = torch.zeros((len(feats),), dtype=torch.long)
 
+    for i, x in enumerate(feats):
+        t = x.shape[0]
+        t2 = min(t, max_frames)
+        out[i, :t2] = x[:t2]
+        lengths[i] = t2
 
-def make_loader(utterances, fe):
-    ds = AudioDataset(utterances, c.SAMPLE_RATE, fe)
-    collate = partial(pad_trunc_collate_fn, max_frames=c.MAX_FRAMES)
-    return DataLoader(ds, batch_size=c.BATCH_SIZE, shuffle=False, collate_fn=collate, num_workers=0)
+    return out, list(speaker_ids), list(paths), lengths
 
 
 @torch.inference_mode()
 def extract_embeddings(model, loader, device: str):
-    embs = []
-    labels = []
+    model.eval()
 
-    for x, y, _lengths in loader:
+    all_embeddings = []
+    all_speaker_ids = []
+    all_paths = []
+
+    for x, speaker_ids, paths, _lengths in tqdm(loader, desc="extract embeddings"):
         x = x.to(device)
-        e = model(x, return_embedding=True)
-        embs.append(e.cpu())
-        labels.extend(int(yi) for yi in y)
+        emb = model(x, return_embedding=True)
+        emb = F.normalize(emb, p=2, dim=1)
 
-    embs = torch.cat(embs, dim=0).numpy().astype(np.float32)
-    labels = _to_int64_labels(labels)
-    return embs, labels
+        all_embeddings.append(emb.cpu())
+        all_speaker_ids.extend(speaker_ids)
+        all_paths.extend(paths)
 
-
-def sample_pairs(labels: np.ndarray, n_same=20000, n_diff=20000, seed=37):
-    rng = np.random.default_rng(seed)
-    labels = labels.astype(np.int64)
-
-    idx_by_label = defaultdict(list)
-    for i, spk in enumerate(labels):
-        idx_by_label[spk].append(i)
-
-    valid_spk = [k for k, v in idx_by_label.items() if len(v) >= 2]
-    if not valid_spk:
-        raise ValueError("No speakers with >=2 samples to form same-speaker pairs.")
-
-    same = []
-    for _ in range(n_same):
-        spk = int(rng.choice(valid_spk))
-        a, b = rng.choice(idx_by_label[spk], size=2, replace=False)
-        same.append((a, b))
-
-    diff = []
-    all_idx = np.arange(len(labels))
-    for _ in range(n_diff):
-        a = int(rng.choice(all_idx))
-        b = int(rng.choice(all_idx))
-        while labels[b] == labels[a]:
-            b = int(rng.choice(all_idx))
-        diff.append((a, b))
-
-    return np.array(same, dtype=np.int64), np.array(diff, dtype=np.int64)
+    embeddings = torch.cat(all_embeddings, dim=0)
+    return embeddings, all_speaker_ids, all_paths
 
 
-def cosine_scores(embs: np.ndarray, pairs: np.ndarray):
-    a = embs[pairs[:, 0]]
-    b = embs[pairs[:, 1]]
-    return np.sum(a * b, axis=1)  # cosine if embeddings are L2-normalized
+def sample_same_pairs(indices_by_speaker, max_pairs: int, seed: int = 37):
+    rng = random.Random(seed)
+    speakers = [spk for spk, idxs in indices_by_speaker.items() if len(idxs) >= 2]
+    if not speakers:
+        return []
+
+    pairs = set()
+    attempts = 0
+    max_attempts = max_pairs * 20
+
+    while len(pairs) < max_pairs and attempts < max_attempts:
+        spk = rng.choice(speakers)
+        i, j = rng.sample(indices_by_speaker[spk], 2)
+        if i > j:
+            i, j = j, i
+        pairs.add((i, j))
+        attempts += 1
+
+    return list(pairs)
 
 
-def summarize(same_scores, diff_scores):
-    print("same mean/std:", float(same_scores.mean()), float(same_scores.std()))
-    print("diff mean/std:", float(diff_scores.mean()), float(diff_scores.std()))
+def sample_diff_pairs(indices_by_speaker, max_pairs: int, seed: int = 37):
+    rng = random.Random(seed)
+    speakers = list(indices_by_speaker.keys())
+    if len(speakers) < 2:
+        return []
+
+    pairs = set()
+    attempts = 0
+    max_attempts = max_pairs * 20
+
+    while len(pairs) < max_pairs and attempts < max_attempts:
+        spk1, spk2 = rng.sample(speakers, 2)
+        i = rng.choice(indices_by_speaker[spk1])
+        j = rng.choice(indices_by_speaker[spk2])
+        if i > j:
+            i, j = j, i
+        pairs.add((i, j))
+        attempts += 1
+
+    return list(pairs)
 
 
-def leakage_checks(train_utts, test_utts):
-    tr_paths = {os.path.normcase(os.path.abspath(str(p))) for p, _ in train_utts}
-    te_paths = {os.path.normcase(os.path.abspath(str(p))) for p, _ in test_utts}
-    inter = sorted(tr_paths.intersection(te_paths))
-    print(f"[LEAK PATH] train={len(tr_paths)} test={len(te_paths)} overlap={len(inter)}")
-    if inter[:5]:
-        print("  examples:", inter[:5])
+def cosine_scores_from_pairs(embeddings: torch.Tensor, pairs):
+    if not pairs:
+        return torch.empty(0, dtype=torch.float32)
 
-    # filename format: <origstem>__sXXXXXXX__eXXXXXXX.wav
-    def origin_id(path: Path) -> str:
-        stem = path.stem
-        return stem.split("__s", 1)[0] if "__s" in stem else stem
+    idx1 = torch.tensor([i for i, _ in pairs], dtype=torch.long)
+    idx2 = torch.tensor([j for _, j in pairs], dtype=torch.long)
 
-    tr_origin = defaultdict(int)
-    te_origin = defaultdict(int)
-    for p, _ in train_utts:
-        tr_origin[origin_id(Path(p))] += 1
-    for p, _ in test_utts:
-        te_origin[origin_id(Path(p))] += 1
+    e1 = embeddings[idx1]
+    e2 = embeddings[idx2]
 
-    overlap_origin = sorted(set(tr_origin.keys()).intersection(te_origin.keys()))
-    print(f"[LEAK ORIGIN] shared_original_recordings={len(overlap_origin)}")
-    if overlap_origin[:5]:
-        print("  examples:", overlap_origin[:5])
-
-    if inter or overlap_origin:
-        print("Some data sources appear in both train and test. Fix split before chunking or split by original file.")
-    else:
-        print("[LEAK OK] No path/origin overlap detected.")
+    scores = (e1 * e2).sum(dim=1)
+    return scores.cpu()
 
 
-def main():
-    # ap = argparse.ArgumentParser()
-    # ap.add_argument("--ckpt", default=c.BEST_MODEL_PATH, help="Path to trained model .pt")
-    # ap.add_argument("--out-dir", default="emb_outputs_bh_P12K5_m0.35_e30", help="Folder to save embeddings/labels")
-    # ap.add_argument("--split", default="test", choices=["train", "val", "test"], help="Which split to verify on")
-    # ap.add_argument("--n-same", type=int, default=20000)
-    # ap.add_argument("--n-diff", type=int, default=20000)
-    # ap.add_argument("--seed", type=int, default=37)
-    # args = ap.parse_args()
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    seen_classes, seen_class_to_index, train_utts, val_utts, unseen_classes, unseen_class_to_index, test_utts = (
-        split_seen_unseen_speakers(
-            c.DATA_ROOT,
-            ratios_seen_train_val=(0.9, 0.1),
-            test_speakers_ratio=0.2,
-            seed=37
-        )
-    )
-    # num_classes = len(seen_classes)
-
-    model = load_model(device, c.BEST_MODEL_PATH)
+def evaluate_split(model, split_name: str, split_root: Path, device: str,
+                   same_pairs: int = 10000, diff_pairs: int = 10000, seed: int = 37):
+    utterances = scan_split(split_root)
+    if len(utterances) == 0:
+        raise RuntimeError(f"No utterances found in split: {split_name}")
 
     fe = LogMelExtraction(
         sample_rate=c.SAMPLE_RATE,
@@ -160,31 +148,91 @@ def main():
         eps=c.EPS
     )
 
-    # if args.split == "train":
-    #     test_utts = train_utts
-    # elif args.split == "val":
-    #     test_utts = val_utts
-    # else:
-    #     test_utts = test_utts
+    ds = VerificationDataset(utterances, c.SAMPLE_RATE, fe)
+    collate = partial(pad_trunc_collate_verify, max_frames=c.MAX_FRAMES)
 
-    loader = make_loader(test_utts, fe)
-
-    # if args.split == "test":
-    leakage_checks(train_utts, test_utts)
-
-    embs, labels = extract_embeddings(model, loader, device)
-
-    same, diff = sample_pairs(labels, n_same=20000, n_diff=20000, seed=37)
-    same_scores = cosine_scores(embs, same)
-    diff_scores = cosine_scores(embs, diff)
-    summarize(same_scores, diff_scores)
-
-    res = metrics.compute_roc_auc_eer(-same_scores, -diff_scores)
-    print(f"ROC AUC: {res['auc']:.6f}")
-    print(
-        f"EER: {res['eer']:.6f} @ thr {res['eer_threshold']:.6f} "
-        f"(FPR {res['fpr_at_eer']:.6f}, FNR {res['fnr_at_eer']:.6f})"
+    loader = DataLoader(
+        ds,
+        batch_size=c.BATCH_SIZE,
+        shuffle=False,
+        collate_fn=collate,
+        num_workers=4,
+        prefetch_factor=4,
+        persistent_workers=True
     )
+
+    embeddings, speaker_ids, paths = extract_embeddings(model, loader, device)
+
+    indices_by_speaker = defaultdict(list)
+    for idx, spk in enumerate(speaker_ids):
+        indices_by_speaker[spk].append(idx)
+
+    same = sample_same_pairs(indices_by_speaker, max_pairs=same_pairs, seed=seed)
+    diff = sample_diff_pairs(indices_by_speaker, max_pairs=diff_pairs, seed=seed + 1)
+
+    same_scores = cosine_scores_from_pairs(embeddings, same)
+    diff_scores = cosine_scores_from_pairs(embeddings, diff)
+
+    if same_scores.numel() == 0 or diff_scores.numel() == 0:
+        raise RuntimeError(
+            f"Could not build enough verification pairs for split={split_name}. "
+            f"same={same_scores.numel()} diff={diff_scores.numel()}"
+        )
+
+    metrics = compute_roc_auc_eer(same_scores.numpy(), diff_scores.numpy())
+    auc = metrics["auc"]
+    eer = metrics["eer"]
+
+    print(f"\n[{split_name.upper()}]")
+    print(f"speakers: {len(indices_by_speaker)}")
+    print(f"files: {len(utterances)}")
+    print(f"same pairs: {len(same)}")
+    print(f"diff pairs: {len(diff)}")
+    print(f"AUC: {auc:.6f}")
+    print(f"EER: {eer:.6f}")
+    print(f"same cosine: {same_scores.mean().item():.3f} ± {same_scores.std().item():.3f}")
+    print(f"diff cosine: {diff_scores.mean().item():.3f} ± {diff_scores.std().item():.3f}")
+
+    out_dir = Path(c.RESULTS_DIR) / "verify"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    torch.save(
+        {
+            "split": split_name,
+            "embeddings": embeddings,
+            "speaker_ids": speaker_ids,
+            "paths": paths,
+            "same_scores": same_scores,
+            "diff_scores": diff_scores,
+            "metrics": metrics,
+        },
+        out_dir / f"{split_name}_embeddings.pt"
+    )
+
+
+def main():
+    train_utts = scan_split(c.TRAIN_ROOT)
+    train_label_map = build_label_map(train_utts)
+    num_classes = len(train_label_map)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = CNN1DNET(
+        n_feats=c.N_MELS,
+        num_classes=num_classes,
+        emb_dim=c.EMB_DIM,
+        dropout=0.3
+    ).to(device)
+
+    ckpt_path = Path(c.BEST_MODEL_PATH)
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+
+    state = torch.load(ckpt_path, map_location=device)
+    model.load_state_dict(state)
+
+    evaluate_split(model, "val", Path(c.VAL_ROOT), device=device)
+    evaluate_split(model, "test", Path(c.TEST_ROOT), device=device)
 
 
 if __name__ == "__main__":
