@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import constants as c
-from dataset import (AudioDataset, split_seen_unseen_speakers, pad_trunc_collate_fn)
+from dataset import AudioDataset, pad_trunc_collate_fn, scan_split, build_label_map, attach_labels
 from features import LogMelExtraction
 from model import CNN1DNET
 from triplet import BatchHardTripletLoss
@@ -14,42 +14,6 @@ from samplers import PKSampler
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
-
-
-def make_random_triplets(labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Build explicit (a_idx, p_idx, n_idx) triplets from labels within a batch.
-    One triplet per anchor when possible.
-    """
-    device = labels.device
-    B = labels.size(0)
-
-    a_list, p_list, n_list = [], [], []
-    for i in range(B):
-        yi = labels[i]
-        pos = torch.where(labels == yi)[0]
-        pos = pos[pos != i]
-        neg = torch.where(labels != yi)[0]
-
-        if pos.numel() == 0 or neg.numel() == 0:
-            continue
-
-        p = pos[torch.randint(0, pos.numel(), (1,), device=device).item()]
-        n = neg[torch.randint(0, neg.numel(), (1,), device=device).item()]
-
-        a_list.append(i)
-        p_list.append(int(p))
-        n_list.append(int(n))
-
-    if len(a_list) == 0:
-        empty = torch.empty(0, dtype=torch.long, device=device)
-        return empty, empty, empty
-
-    return (
-        torch.tensor(a_list, dtype=torch.long, device=device),
-        torch.tensor(p_list, dtype=torch.long, device=device),
-        torch.tensor(n_list, dtype=torch.long, device=device),
-    )
 
 
 def run_epoch_batchhard(model, loader, triplet_loss, optimizer, device, train: bool, desc: str):
@@ -80,19 +44,24 @@ def run_epoch_batchhard(model, loader, triplet_loss, optimizer, device, train: b
 
 
 def main():
-    seen_classes, seen_class_to_index, train_utts, val_utts, unseen_classes, unseen_class_to_index, test_utts = (
-        split_seen_unseen_speakers(
-            c.DATA_ROOT,
-            ratios_seen_train_val=(0.9, 0.1),
-            test_speakers_ratio=0.2,
-            seed=37
-        )
-    )
+    train_utts = scan_split(c.TRAIN_ROOT)
+    val_utts = scan_split(c.VAL_ROOT)
+    test_utts = scan_split(c.TEST_ROOT)
 
-    num_classes = len(seen_classes)  # IMPORTANT: classifier head matches SEEN speakers only
-    print("Seen speakers (train/val):", len(seen_classes))
+    train_label_map = build_label_map(train_utts)
+    train_utts = attach_labels(train_utts, train_label_map)
+
+    # local labels only for temporary val triplet-loss monitoring
+    val_label_map = build_label_map(val_utts)
+    val_utts = attach_labels(val_utts, val_label_map)
+
+    num_classes = len(train_label_map)
+    print("Train speakers:", len(train_label_map))
     print("Train files:", len(train_utts))
+    print("Val speakers:", len(val_label_map))
     print("Val files:", len(val_utts))
+    print("Test speakers:", len({u.speaker_id for u in test_utts}))
+    print("Test files:", len(test_utts))
 
     fe = LogMelExtraction(
         sample_rate=c.SAMPLE_RATE,
@@ -109,7 +78,7 @@ def main():
     val_ds = AudioDataset(val_utts, c.SAMPLE_RATE, fe)
 
     P, K = 12, 5
-    train_labels = [lab for _, lab in train_utts]
+    train_labels = [u.label for u in train_utts]  # is a list of Utterance
 
     sampler = PKSampler(train_labels, P=P, K=K, seed=37)
 
@@ -117,7 +86,7 @@ def main():
 
     train_loader = DataLoader(
         train_ds, batch_size=P*K, sampler=sampler, shuffle=False, drop_last=True, collate_fn=collate,
-        num_workers=4, prefetch_factor=4, persistent_workers=True
+        num_workers=8, prefetch_factor=4, persistent_workers=True
     )
 
     x, y, _ = next(iter(train_loader))
@@ -125,7 +94,7 @@ def main():
 
     val_loader = DataLoader(
         val_ds, batch_size=c.BATCH_SIZE, shuffle=False, collate_fn=collate,
-        num_workers=4, prefetch_factor=4, persistent_workers=True
+        num_workers=8, prefetch_factor=4, persistent_workers=True
     )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
