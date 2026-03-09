@@ -3,28 +3,14 @@ from torch import nn
 import torch.nn.functional as F
 
 
-class FeedForwardNet(nn.Module):
-    def __init__(self, n_mfcc: int, max_frames: int, num_classes: int):
-        super().__init__()
-        self.flatten = nn.Flatten()
-        self.net = nn.Sequential(
-            nn.Linear(n_mfcc * max_frames, 512),
-            nn.ReLU(),
-            nn.Dropout(p=0.3),
-            nn.Linear(512, num_classes),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, T, F)
-        x = self.flatten(x)
-        return self.net(x)
-
-
 class CNN1DNET(nn.Module):
-    """Input: x(B, T, F) where F = n_mels (or n_mfcc).
-        Treat bins as channels: (B, F, T) for Conv1d."""
+    """Input: x (B, T, F), where F is the feature dimension.
+    Treat feature bins as channels by transposing to (B, F, T) for Conv1d.
+    Embeddings are the main output for unseen-speaker verification.
+    The classifier head is used only for train-speaker supervision."""
     def __init__(self, n_feats: int, num_classes: int, emb_dim: int = 192, dropout: float = 0.3):
         super().__init__()
+        self.emb_dim = emb_dim
         self.features = nn.Sequential(
             nn.Conv1d(n_feats, 64, kernel_size=5, stride=1, padding=2),
             nn.ReLU(),
@@ -46,7 +32,7 @@ class CNN1DNET(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(256, emb_dim)
         )
-        # classifier head (used for training with CrossEntropyLoss)
+        # classifier head used only for train-speaker supervision
         self.classifier = nn.Linear(emb_dim, num_classes)
 
     def forward(self, x: torch.Tensor, return_embedding: bool = False) -> torch.Tensor:
