@@ -22,5 +22,8 @@ dependencies = [
   "tqdm=4.67.3",
   "colorama=0.4.6",
   "scikit-learn=1.6.1",
-  "scipy=1.13.1"
+  "scipy=1.13.1",
+  "tensorboard=2.20.0 ",
+  "torchviz=0.0.3",
+  "torchinfo=1.8.0"
 ]
