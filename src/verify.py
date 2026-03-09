@@ -228,8 +228,8 @@ def main():
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-    state = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(state)
+    ckpt = torch.load(ckpt_path, map_location=device)
+    model.load_state_dict(ckpt["model_state_dict"])
 
     evaluate_split(model, "val", Path(c.VAL_ROOT), device=device)
     evaluate_split(model, "test", Path(c.TEST_ROOT), device=device)
