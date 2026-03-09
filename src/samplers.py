@@ -1,9 +1,7 @@
-# import math
 import random
 from collections import defaultdict
 from typing import Iterator, List
 
-# import torch
 from torch.utils.data import Sampler
 
 
