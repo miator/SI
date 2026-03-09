@@ -1,8 +1,11 @@
 import time
 from pathlib import Path
 from functools import partial
+import warnings
+
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 import constants as c
@@ -12,7 +15,6 @@ from model import CNN1DNET
 from triplet import BatchHardTripletLoss
 from samplers import PKSampler
 
-import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
 
@@ -25,10 +27,10 @@ def run_epoch_batchhard(model, loader, triplet_loss, optimizer, device, train: b
     with ctx:
         for x, y, _lengths in tqdm(loader, desc=desc):
             x = x.to(device)
-            y = y.to(device).view(-1)   # ensure shape (B,)
+            y = y.to(device).view(-1)
 
-            emb = model(x, return_embedding=True)  # (B, D)
-            loss = triplet_loss(emb, y)            # scalar (can be 0.0)
+            emb = model(x, return_embedding=True)
+            loss = triplet_loss(emb, y)
 
             if train:
                 optimizer.zero_grad(set_to_none=True)
@@ -40,7 +42,21 @@ def run_epoch_batchhard(model, loader, triplet_loss, optimizer, device, train: b
 
     if total_batches == 0:
         raise RuntimeError("No batches were produced by the loader (check sampler/batch_size).")
+
     return total_loss / total_batches
+
+
+def save_checkpoint(path, model, optimizer, epoch, best_val_loss):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "best_val_loss": best_val_loss,
+        },
+        path,
+    )
 
 
 def main():
@@ -51,7 +67,6 @@ def main():
     train_label_map = build_label_map(train_utts)
     train_utts = attach_labels(train_utts, train_label_map)
 
-    # local labels only for temporary val triplet-loss monitoring
     val_label_map = build_label_map(val_utts)
     val_utts = attach_labels(val_utts, val_label_map)
 
@@ -77,62 +92,140 @@ def main():
     train_ds = AudioDataset(train_utts, c.SAMPLE_RATE, fe)
     val_ds = AudioDataset(val_utts, c.SAMPLE_RATE, fe)
 
-    P, K = 12, 5
-    train_labels = [u.label for u in train_utts]  # is a list of Utterance
-
-    sampler = PKSampler(train_labels, P=P, K=K, seed=37)
+    train_labels = [u.label for u in train_utts]
+    sampler = PKSampler(train_labels, P=c.P, K=c.K, seed=37)
 
     collate = partial(pad_trunc_collate_fn, max_frames=c.MAX_FRAMES)
 
     train_loader = DataLoader(
-        train_ds, batch_size=P*K, sampler=sampler, shuffle=False, drop_last=True, collate_fn=collate,
-        num_workers=8, prefetch_factor=4, persistent_workers=True
+        train_ds,
+        batch_size=c.P * c.K,
+        sampler=sampler,
+        shuffle=False,
+        drop_last=True,
+        collate_fn=collate,
+        num_workers=8,
+        prefetch_factor=4,
+        persistent_workers=True
     )
-
-    x, y, _ = next(iter(train_loader))
-    print("unique speakers in batch:", len(torch.unique(y)), "batch size:", len(y))
 
     val_loader = DataLoader(
-        val_ds, batch_size=c.BATCH_SIZE, shuffle=False, collate_fn=collate,
-        num_workers=8, prefetch_factor=4, persistent_workers=True
+        val_ds,
+        batch_size=c.BATCH_SIZE,
+        shuffle=False,
+        collate_fn=collate,
+        num_workers=8,
+        prefetch_factor=4,
+        persistent_workers=True
     )
 
+    x0, y0, _ = next(iter(train_loader))
+    print("unique speakers in batch:", len(torch.unique(y0)), "batch size:", len(y0))
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = CNN1DNET(n_feats=c.N_MELS, num_classes=num_classes, emb_dim=c.EMB_DIM, dropout=0.3).to(device)
-    triplet_loss = BatchHardTripletLoss(margin=0.35, normalize=True)
-    optimizer = torch.optim.Adam(model.parameters(), lr=c.LEARNING_RATE, weight_decay=1e-4)
+    model = CNN1DNET(
+        n_feats=c.N_MELS,
+        num_classes=num_classes,
+        emb_dim=c.EMB_DIM,
+        dropout=0.3
+    ).to(device)
+    triplet_loss = BatchHardTripletLoss(margin=c.TRIPLET_MARGIN, normalize=True)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=c.LEARNING_RATE,
+        weight_decay=c.WEIGHT_DECAY
+    )
+
+    Path(c.TB_DIR).mkdir(parents=True, exist_ok=True)
+    Path(c.CKPT_DIR).mkdir(parents=True, exist_ok=True)
+
+    run_name = (
+        f"cnn1d_emb{c.EMB_DIM}_m{c.TRIPLET_MARGIN}"
+        f"_P{c.P}K{c.K}_lr{c.LEARNING_RATE}"
+    )
+    writer = SummaryWriter(log_dir=str(Path(c.TB_DIR) / run_name))
+
+    writer.add_text("config", "\n".join([
+        f"sample_rate={c.SAMPLE_RATE}",
+        f"n_mels={c.N_MELS}",
+        f"max_frames={c.MAX_FRAMES}",
+        f"emb_dim={c.EMB_DIM}",
+        f"margin={c.TRIPLET_MARGIN}",
+        f"P={c.P}",
+        f"K={c.K}",
+        f"batch_size_train={c.P * c.K}",
+        f"batch_size_val={c.BATCH_SIZE}",
+        f"lr={c.LEARNING_RATE}",
+        f"weight_decay={c.WEIGHT_DECAY}",
+        f"epochs={c.EPOCHS}",
+    ]), 0)
+
+    try:
+        writer.add_graph(model, x0.to(device))
+    except Exception as e:
+        print("TensorBoard graph add failed:", e)
 
     patience = 5
     min_delta = 1e-4
     best_val_loss = float("inf")
     bad_epochs = 0
-    best_path = Path(c.BEST_MODEL_PATH)
-    best_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ---- TRAIN LOOP ----
     for epoch in range(c.EPOCHS):
         start = time.perf_counter()
 
-        tr_loss = run_epoch_batchhard(model, train_loader, triplet_loss, optimizer, device, train=True, desc="train")
-        va_loss = run_epoch_batchhard(model, val_loader, triplet_loss, optimizer, device, train=False, desc="val")
+        tr_loss = run_epoch_batchhard(
+            model, train_loader, triplet_loss, optimizer, device,
+            train=True, desc=f"train {epoch+1}/{c.EPOCHS}"
+        )
+        va_loss = run_epoch_batchhard(
+            model, val_loader, triplet_loss, optimizer, device,
+            train=False, desc=f"val {epoch+1}/{c.EPOCHS}"
+        )
 
         elapsed = time.perf_counter() - start
-        if va_loss < best_val_loss - min_delta:
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        writer.add_scalar("loss/train", tr_loss, epoch + 1)
+        writer.add_scalar("loss/val", va_loss, epoch + 1)
+        writer.add_scalar("lr", current_lr, epoch + 1)
+        writer.add_scalar("time/epoch_sec", elapsed, epoch + 1)
+
+        save_checkpoint(
+            c.LAST_MODEL_PATH,
+            model=model,
+            optimizer=optimizer,
+            epoch=epoch + 1,
+            best_val_loss=best_val_loss,
+        )
+
+        improved = va_loss < best_val_loss - min_delta
+        if improved:
             best_val_loss = va_loss
             bad_epochs = 0
-            torch.save(model.state_dict(), best_path)
+            save_checkpoint(
+                c.BEST_MODEL_PATH,
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch + 1,
+                best_val_loss=best_val_loss,
+            )
         else:
             bad_epochs += 1
-            if bad_epochs >= patience:
-                print(f"early stop at epoch {epoch + 1}")
-                break
 
         print(
             f"epoch {epoch + 1}/{c.EPOCHS} | "
             f"train triplet loss {tr_loss:.4f} | "
             f"val triplet loss {va_loss:.4f} | "
+            f"lr {current_lr:.6f} | "
             f"time {elapsed:.2f}s"
         )
+
+        if bad_epochs >= patience:
+            print(f"early stop at epoch {epoch + 1}")
+            break
+
+    writer.close()
 
 
 if __name__ == "__main__":
