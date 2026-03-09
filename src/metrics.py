@@ -55,7 +55,7 @@ def roc_curve(labels, scores):
     fpr = np.r_[0.0, fpr]
     thr = np.r_[thr[0] + 1e-12, thr]
 
-    return tpr, fpr, thr
+    return fpr, tpr, thr
 
 
 def auc_trapz(fpr, tpr):
