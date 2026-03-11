@@ -44,3 +44,13 @@ K = 5
 TRAIN_ROOT = r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\wav\train"
 VAL_ROOT = r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\wav\val"
 TEST_ROOT = r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\wav\test"
+
+PRECOMPUTED_ROOT = Path(
+    r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\logmel_cache"
+)
+
+TRAIN_FEAT_ROOT = PRECOMPUTED_ROOT / "train"
+VAL_FEAT_ROOT = PRECOMPUTED_ROOT / "val"
+TEST_FEAT_ROOT = PRECOMPUTED_ROOT / "test"
+
+USE_PRECOMPUTED_FEATURES = True
