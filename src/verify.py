@@ -9,7 +9,13 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
 import constants as c
-from dataset import scan_split, build_label_map, read_audio_fast
+from dataset import (
+    scan_split,
+    build_label_map,
+    read_audio_fast,
+    wav_path_to_feature_path,
+    load_feature_tensor,
+)
 from features import LogMelExtraction
 from model import CNN1DNET
 from metrics import compute_roc_auc_eer
@@ -22,19 +28,43 @@ class VerificationDataset(Dataset):
     """
     Dataset for embedding extraction on verification splits.
     Returns feature tensor, original speaker_id, and path.
+    Can read either raw WAVs or precomputed .pt log-mel tensors.
     """
-    def __init__(self, utterances, sample_rate: int, feature_extractor):
+    def __init__(
+        self,
+        utterances,
+        sample_rate=None,
+        feature_extractor=None,
+        split_root=None,
+        feat_root=None,
+    ):
         self.utterances = list(utterances)
         self.sample_rate = sample_rate
         self.fe = feature_extractor
+        self.split_root = Path(split_root) if split_root is not None else None
+        self.feat_root = Path(feat_root) if feat_root is not None else None
+
+        using_precomputed = self.split_root is not None or self.feat_root is not None
+        if using_precomputed and (self.split_root is None or self.feat_root is None):
+            raise ValueError("Both split_root and feat_root must be provided for precomputed features.")
+        if not using_precomputed and (self.sample_rate is None or self.fe is None):
+            raise ValueError("sample_rate and feature_extractor must be provided for on-the-fly features.")
 
     def __len__(self) -> int:
         return len(self.utterances)
 
     def __getitem__(self, idx: int):
         u = self.utterances[idx]
-        wav = read_audio_fast(u.path, self.sample_rate)
-        feat = self.fe(wav)
+
+        if self.feat_root is not None:
+            feat_path = wav_path_to_feature_path(u.path, self.split_root, self.feat_root)
+            if not feat_path.exists():
+                raise FileNotFoundError(f"Missing precomputed feature file: {feat_path}")
+            feat = load_feature_tensor(feat_path)
+        else:
+            wav = read_audio_fast(u.path, self.sample_rate)
+            feat = self.fe(wav)
+
         return feat, u.speaker_id, str(u.path)
 
 
@@ -137,18 +167,40 @@ def evaluate_split(model, split_name: str, split_root: Path, device: str,
     if len(utterances) == 0:
         raise RuntimeError(f"No utterances found in split: {split_name}")
 
-    fe = LogMelExtraction(
-        sample_rate=c.SAMPLE_RATE,
-        n_fft=c.N_FFT,
-        win_length=c.WIN_LENGTH,
-        hop_length=c.HOP_LENGTH,
-        n_mels=c.N_MELS,
-        f_min=c.FMIN,
-        f_max=c.FMAX,
-        eps=c.EPS
-    )
+    if split_name == "val":
+        split_root = c.VAL_ROOT
+        feat_root = c.VAL_FEAT_ROOT
+    elif split_name == "test":
+        split_root = c.TEST_ROOT
+        feat_root = c.TEST_FEAT_ROOT
+    else:
+        raise ValueError(f"Unsupported split_name: {split_name}")
 
-    ds = VerificationDataset(utterances, c.SAMPLE_RATE, fe)
+    if c.USE_PRECOMPUTED_FEATURES:
+        ds = VerificationDataset(
+            utterances,
+            split_root=split_root,
+            feat_root=feat_root,
+        )
+        print(f"Using precomputed log-mel features for {split_name}.")
+    else:
+        fe = LogMelExtraction(
+            sample_rate=c.SAMPLE_RATE,
+            n_fft=c.N_FFT,
+            win_length=c.WIN_LENGTH,
+            hop_length=c.HOP_LENGTH,
+            n_mels=c.N_MELS,
+            f_min=c.FMIN,
+            f_max=c.FMAX,
+            eps=c.EPS
+        )
+        ds = VerificationDataset(
+            utterances,
+            sample_rate=c.SAMPLE_RATE,
+            feature_extractor=fe,
+        )
+        print(f"Using on-the-fly log-mel extraction for {split_name}.")
+
     collate = partial(pad_trunc_collate_verify, max_frames=c.MAX_FRAMES)
 
     loader = DataLoader(
@@ -156,9 +208,9 @@ def evaluate_split(model, split_name: str, split_root: Path, device: str,
         batch_size=c.BATCH_SIZE,
         shuffle=False,
         collate_fn=collate,
-        num_workers=4,
-        prefetch_factor=4,
-        persistent_workers=True
+        num_workers=7,
+        prefetch_factor=1,
+        persistent_workers=False
     )
 
     embeddings, speaker_ids, paths = extract_embeddings(model, loader, device)
