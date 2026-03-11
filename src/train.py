@@ -9,13 +9,22 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 import constants as c
-from dataset import AudioDataset, pad_trunc_collate_fn, scan_split, build_label_map, attach_labels
+from dataset import (
+    AudioDataset,
+    PrecomputedFeatureDataset,
+    pad_trunc_collate_fn,
+    scan_split,
+    build_label_map,
+    attach_labels)
 from features import LogMelExtraction
 from model import CNN1DNET
 from triplet import BatchHardTripletLoss
 from samplers import PKSampler
 
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
+
+torch.set_num_threads(10)
+torch.set_num_interop_threads(2)
 
 
 def run_epoch_batchhard(model, loader, triplet_loss, optimizer, device, train: bool, desc: str):
@@ -78,19 +87,32 @@ def main():
     print("Test speakers:", len({u.speaker_id for u in test_utts}))
     print("Test files:", len(test_utts))
 
-    fe = LogMelExtraction(
-        sample_rate=c.SAMPLE_RATE,
-        n_fft=c.N_FFT,
-        win_length=c.WIN_LENGTH,
-        hop_length=c.HOP_LENGTH,
-        n_mels=c.N_MELS,
-        f_min=c.FMIN,
-        f_max=c.FMAX,
-        eps=c.EPS
-    )
+    if c.USE_PRECOMPUTED_FEATURES:
+        train_ds = PrecomputedFeatureDataset(
+            train_utts,
+            split_root=c.TRAIN_ROOT,
+            feat_root=c.TRAIN_FEAT_ROOT
+        )
+        val_ds = PrecomputedFeatureDataset(
+            val_utts,
+            split_root=c.VAL_ROOT,
+            feat_root=c.VAL_FEAT_ROOT
+        )
+    else:
+        fe = LogMelExtraction(
+            sample_rate=c.SAMPLE_RATE,
+            n_fft=c.N_FFT,
+            win_length=c.WIN_LENGTH,
+            hop_length=c.HOP_LENGTH,
+            n_mels=c.N_MELS,
+            f_min=c.FMIN,
+            f_max=c.FMAX,
+            eps=c.EPS
+        )
 
-    train_ds = AudioDataset(train_utts, c.SAMPLE_RATE, fe)
-    val_ds = AudioDataset(val_utts, c.SAMPLE_RATE, fe)
+        train_ds = AudioDataset(train_utts, c.SAMPLE_RATE, fe)
+        val_ds = AudioDataset(val_utts, c.SAMPLE_RATE, fe)
+        print("Using on-the-fly log-mel extraction.")
 
     train_labels = [u.label for u in train_utts]
     sampler = PKSampler(train_labels, P=c.P, K=c.K, seed=37)
@@ -104,9 +126,9 @@ def main():
         shuffle=False,
         drop_last=True,
         collate_fn=collate,
-        num_workers=8,
-        prefetch_factor=4,
-        persistent_workers=True
+        num_workers=7,
+        prefetch_factor=1,
+        persistent_workers=False,
     )
 
     val_loader = DataLoader(
@@ -114,14 +136,13 @@ def main():
         batch_size=c.BATCH_SIZE,
         shuffle=False,
         collate_fn=collate,
-        num_workers=8,
-        prefetch_factor=4,
-        persistent_workers=True
+        num_workers=9,
+        prefetch_factor=1,
+        persistent_workers=False,
     )
 
     x0, y0, _ = next(iter(train_loader))
-    print("unique speakers in batch:", len(torch.unique(y0)), "batch size:", len(y0))
-
+    print("batch:", x0.shape, x0.dtype, y0.shape, y0.dtype)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = CNN1DNET(
         n_feats=c.N_MELS,
