@@ -2,7 +2,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-EXP_NAME = "cnn1d_emb192_m035_P12K5_lr5e4"
+EXP_NAME = "cnn1d_emb192_m035_P12K5_lr5e4_plateau"
 
 RUNS_DIR = PROJECT_ROOT / "runs"
 EXP_DIR = RUNS_DIR / EXP_NAME
@@ -28,6 +28,11 @@ BATCH_SIZE = 64
 EPOCHS = 30
 LEARNING_RATE = 5e-4
 WEIGHT_DECAY = 1e-4
+
+LR_SCHEDULER = "plateau"
+LR_FACTOR = 0.5
+LR_PATIENCE = 2
+MIN_LR = 1e-6
 
 EMB_DIM = 192
 EPS = 1e-6
