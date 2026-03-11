@@ -136,6 +136,14 @@ def main():
         weight_decay=c.WEIGHT_DECAY
     )
 
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=c.LR_FACTOR,
+        patience=c.LR_PATIENCE,
+        min_lr=c.MIN_LR,
+    )
+
     Path(c.TB_DIR).mkdir(parents=True, exist_ok=True)
     Path(c.CKPT_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -157,6 +165,10 @@ def main():
         f"batch_size_val={c.BATCH_SIZE}",
         f"lr={c.LEARNING_RATE}",
         f"weight_decay={c.WEIGHT_DECAY}",
+        f"lr_scheduler={c.LR_SCHEDULER}",
+        f"lr_factor={c.LR_FACTOR}",
+        f"lr_patience={c.LR_PATIENCE}",
+        f"min_lr={c.MIN_LR}",
         f"epochs={c.EPOCHS}",
     ]), 0)
 
@@ -165,7 +177,7 @@ def main():
     except Exception as e:
         print("TensorBoard graph add failed:", e)
 
-    patience = 5
+    patience = 7
     min_delta = 1e-4
     best_val_loss = float("inf")
     bad_epochs = 0
@@ -182,6 +194,8 @@ def main():
             model, val_loader, triplet_loss, optimizer, device,
             train=False, desc=f"val {epoch+1}/{c.EPOCHS}"
         )
+
+        scheduler.step(va_loss)
 
         elapsed = time.perf_counter() - start
         current_lr = optimizer.param_groups[0]["lr"]
