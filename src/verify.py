@@ -1,4 +1,7 @@
+import argparse
+import csv
 import random
+import re
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
@@ -22,6 +25,145 @@ from metrics import compute_roc_auc_eer
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
+
+
+SUMMARY_FIELDNAMES = [
+    "experiment",
+    "split",
+    "auc",
+    "eer",
+    "same_mean",
+    "same_std",
+    "diff_mean",
+    "diff_std",
+    "margin",
+    "P",
+    "K",
+    "embedding_dim",
+]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Verify a trained experiment and log split metrics."
+    )
+    parser.add_argument(
+        "--experiment",
+        required=True,
+        help="Experiment folder name under runs/, or a full path to the experiment folder.",
+    )
+    return parser.parse_args()
+
+
+def parse_margin_token(token: str):
+    if not token:
+        return None
+    if "." in token:
+        return float(token)
+    if token.startswith("0") and len(token) > 1:
+        return float(f"0.{token[1:]}")
+    return float(token)
+
+
+def parse_experiment_hparams(experiment_name: str) -> dict:
+    match = re.search(
+        r"emb(?P<embedding_dim>\d+).*?_m(?P<margin>[0-9.]+)_P(?P<P>\d+)K(?P<K>\d+)",
+        experiment_name,
+    )
+    if match is None:
+        return {
+            "margin": None,
+            "P": None,
+            "K": None,
+            "embedding_dim": None,
+        }
+
+    return {
+        "margin": parse_margin_token(match.group("margin")),
+        "P": int(match.group("P")),
+        "K": int(match.group("K")),
+        "embedding_dim": int(match.group("embedding_dim")),
+    }
+
+
+def resolve_run_root(experiment_arg: str) -> Path:
+    run_root = Path(experiment_arg)
+    if not run_root.is_absolute():
+        run_root = Path(c.RUNS_DIR) / experiment_arg
+    run_root = run_root.resolve()
+
+    if not run_root.exists():
+        raise FileNotFoundError(f"Experiment folder not found: {run_root}")
+    return run_root
+
+
+def resolve_checkpoint_path(run_root: Path) -> Path:
+    candidates = [
+        run_root / "checkpoints" / "best.pt",
+        run_root / "checkpoints" / "best_val_loss.pt",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+
+    raise FileNotFoundError(
+        "Could not find a best checkpoint. Looked for:\n"
+        + "\n".join(str(path) for path in candidates)
+    )
+
+
+def infer_emb_dim_from_checkpoint(state_dict: dict, fallback: int) -> int:
+    emb_weight = state_dict.get("emb.1.weight")
+    if emb_weight is not None:
+        return int(emb_weight.shape[0])
+
+    classifier_weight = state_dict.get("classifier.weight")
+    if classifier_weight is not None:
+        return int(classifier_weight.shape[1])
+
+    return fallback
+
+
+def append_metrics_row(csv_path: Path, row: dict):
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = csv_path.exists()
+    with csv_path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDNAMES)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def write_metrics_rows(csv_path: Path, rows):
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def build_metrics_row(
+    experiment_name: str,
+    split_name: str,
+    metrics: dict,
+    same_scores: torch.Tensor,
+    diff_scores: torch.Tensor,
+    hparams: dict,
+) -> dict:
+    return {
+        "experiment": experiment_name,
+        "split": split_name,
+        "auc": float(metrics["auc"]),
+        "eer": float(metrics["eer"]),
+        "same_mean": float(same_scores.mean().item()),
+        "same_std": float(same_scores.std().item()),
+        "diff_mean": float(diff_scores.mean().item()),
+        "diff_std": float(diff_scores.std().item()),
+        "margin": hparams["margin"],
+        "P": hparams["P"],
+        "K": hparams["K"],
+        "embedding_dim": hparams["embedding_dim"],
+    }
 
 
 class VerificationDataset(Dataset):
@@ -161,8 +303,18 @@ def cosine_scores_from_pairs(embeddings: torch.Tensor, pairs):
     return scores.cpu()
 
 
-def evaluate_split(model, split_name: str, split_root: Path, device: str,
-                   same_pairs: int = 10000, diff_pairs: int = 10000, seed: int = 37):
+def evaluate_split(
+    model,
+    split_name: str,
+    split_root: Path,
+    device: str,
+    output_dir: Path,
+    experiment_name: str,
+    hparams: dict,
+    same_pairs: int = 10000,
+    diff_pairs: int = 10000,
+    seed: int = 37,
+):
     utterances = scan_split(split_root)
     if len(utterances) == 0:
         raise RuntimeError(f"No utterances found in split: {split_name}")
@@ -242,14 +394,23 @@ def evaluate_split(model, split_name: str, split_root: Path, device: str,
     print(f"diff pairs: {len(diff)}")
     print(f"AUC: {auc:.6f}")
     print(f"EER: {eer:.6f}")
-    print(f"same cosine: {same_scores.mean().item():.3f} ± {same_scores.std().item():.3f}")
-    print(f"diff cosine: {diff_scores.mean().item():.3f} ± {diff_scores.std().item():.3f}")
+    print(f"same cosine: {same_scores.mean().item():.3f} | {same_scores.std().item():.3f}")
+    print(f"diff cosine: {diff_scores.mean().item():.3f} | {diff_scores.std().item():.3f}")
 
-    out_dir = Path(c.RESULTS_DIR) / "verify"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    row = build_metrics_row(
+        experiment_name=experiment_name,
+        split_name=split_name,
+        metrics=metrics,
+        same_scores=same_scores,
+        diff_scores=diff_scores,
+        hparams=hparams,
+    )
 
     torch.save(
         {
+            "experiment": experiment_name,
             "split": split_name,
             "embeddings": embeddings,
             "speaker_ids": speaker_ids,
@@ -257,34 +418,73 @@ def evaluate_split(model, split_name: str, split_root: Path, device: str,
             "same_scores": same_scores,
             "diff_scores": diff_scores,
             "metrics": metrics,
+            "summary_row": row,
         },
-        out_dir / f"{split_name}_embeddings.pt"
+        output_dir / f"{split_name}_embeddings.pt"
     )
+
+    return row
 
 
 def main():
+    args = parse_args()
+
+    run_root = resolve_run_root(args.experiment)
+    experiment_name = run_root.name
+    verify_dir = run_root / "results" / "verify"
+    per_run_csv = verify_dir / "metrics_summary.csv"
+    global_csv = Path(c.RUNS_DIR) / "verify_summary.csv"
+
+    hparams = parse_experiment_hparams(experiment_name)
+
     train_utts = scan_split(c.TRAIN_ROOT)
     train_label_map = build_label_map(train_utts)
     num_classes = len(train_label_map)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    ckpt_path = resolve_checkpoint_path(run_root)
+    ckpt = torch.load(ckpt_path, map_location=device)
+
+    emb_dim = infer_emb_dim_from_checkpoint(
+        ckpt["model_state_dict"],
+        hparams["embedding_dim"] or c.EMB_DIM,
+    )
+    if hparams["embedding_dim"] is None:
+        hparams["embedding_dim"] = emb_dim
+
     model = CNN1DNET(
         n_feats=c.N_MELS,
         num_classes=num_classes,
-        emb_dim=c.EMB_DIM,
+        emb_dim=emb_dim,
         dropout=0.3
     ).to(device)
 
-    ckpt_path = Path(c.BEST_MODEL_PATH)
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-
-    ckpt = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
 
-    evaluate_split(model, "val", Path(c.VAL_ROOT), device=device)
-    evaluate_split(model, "test", Path(c.TEST_ROOT), device=device)
+    rows = []
+    for split_name, split_root in (
+        ("val", Path(c.VAL_ROOT)),
+        ("test", Path(c.TEST_ROOT)),
+    ):
+        row = evaluate_split(
+            model,
+            split_name,
+            split_root,
+            device=device,
+            output_dir=verify_dir,
+            experiment_name=experiment_name,
+            hparams=hparams,
+        )
+        rows.append(row)
+
+    write_metrics_rows(per_run_csv, rows)
+
+    for row in rows:
+        append_metrics_row(global_csv, row)
+
+    print(f"\nPer-run summary saved to: {per_run_csv}")
+    print(f"Global summary appended to: {global_csv}")
 
 
 if __name__ == "__main__":
