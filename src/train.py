@@ -37,14 +37,34 @@ def parse_args():
     parser.add_argument("--p", type=int, default=None, help="PK sampler P override.")
     parser.add_argument("--k", type=int, default=None, help="PK sampler K override.")
     parser.add_argument("--emb-dim", type=int, default=None, help="Embedding dimension override.")
-    parser.add_argument("--epochs", type=int, default=None, help="Epoch count override.")
+    parser.add_argument("--epochs", type=int, default=None, help="Epoch override.")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate override.")
+    parser.add_argument(
+        "--lr-scheduler",
+        type=str,
+        default=None,
+        choices=["none", "plateau", "cosine"],
+        help="Learning-rate scheduler override.",
+    )
+    parser.add_argument("--wd", type=float, default=None, help="Weight decay override.")
     return parser.parse_args()
 
 
-def make_run_name(margin: float, p: int, k: int, emb_dim: int, lr: float) -> str:
+def make_run_name(
+    margin: float,
+    p: int,
+    k: int,
+    emb_dim: int,
+    lr: float,
+    weight_decay: float,
+    dropout: float,
+    scheduler_name: str,
+) -> str:
     margin_str = str(margin).replace(".", "")
     lr_str = str(lr).replace(".", "").replace("-", "")
-    return f"cnn1d_emb{emb_dim}_m{margin_str}_P{p}K{k}_lr{lr_str}"
+    wd_str = str(weight_decay).replace(".", "").replace("-", "")
+    dropout_str = str(dropout).replace(".", "")
+    return f"cnn1d_emb{emb_dim}_m{margin_str}_P{p}K{k}_lr{lr_str}_wd{wd_str}_drop{dropout_str}_{scheduler_name}"
 
 
 def run_epoch_batchhard(model, loader, triplet_loss, optimizer, device, train: bool, desc: str):
@@ -75,17 +95,38 @@ def run_epoch_batchhard(model, loader, triplet_loss, optimizer, device, train: b
     return total_loss / total_batches
 
 
-def save_checkpoint(path, model, optimizer, epoch, best_val_loss):
+def build_scheduler(optimizer, scheduler_name: str, epochs: int):
+    if scheduler_name == "none":
+        return None
+    if scheduler_name == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=c.LR_FACTOR,
+            patience=c.LR_PATIENCE,
+            min_lr=c.MIN_LR,
+        )
+    if scheduler_name == "cosine":
+        t_max = c.COSINE_T_MAX if c.COSINE_T_MAX is not None else epochs
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=t_max,
+            eta_min=c.COSINE_ETA_MIN,
+        )
+    raise ValueError(f"Unsupported scheduler: {scheduler_name}")
+
+
+def save_checkpoint(path, model, optimizer, epoch, best_val_loss, scheduler=None):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "best_val_loss": best_val_loss,
-        },
-        path,
-    )
+    payload = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "best_val_loss": best_val_loss,
+    }
+    if scheduler is not None:
+        payload["scheduler_state_dict"] = scheduler.state_dict()
+    torch.save(payload, path)
 
 
 def main():
@@ -96,13 +137,19 @@ def main():
     k = c.K if args.k is None else args.k
     emb_dim = c.EMB_DIM if args.emb_dim is None else args.emb_dim
     epochs = c.EPOCHS if args.epochs is None else args.epochs
+    lr = c.LEARNING_RATE if args.lr is None else args.lr
+    weight_decay = c.WEIGHT_DECAY if args.wd is None else args.wd
+    lr_scheduler_name = c.LR_SCHEDULER if args.lr_scheduler is None else args.lr_scheduler
 
     run_name = args.run_name or make_run_name(
         margin=margin,
         p=p,
         k=k,
         emb_dim=emb_dim,
-        lr=c.LEARNING_RATE,
+        lr=lr,
+        weight_decay=weight_decay,
+        dropout=c.DROPOUT,
+        scheduler_name=lr_scheduler_name,
     )
 
     run_root = Path(c.RUNS_DIR) / run_name
@@ -116,7 +163,6 @@ def main():
 
     train_utts = scan_split(c.TRAIN_ROOT)
     val_utts = scan_split(c.VAL_ROOT)
-    test_utts = scan_split(c.TEST_ROOT)
 
     train_label_map = build_label_map(train_utts)
     train_utts = attach_labels(train_utts, train_label_map)
@@ -125,27 +171,13 @@ def main():
     val_utts = attach_labels(val_utts, val_label_map)
 
     num_classes = len(train_label_map)
-    print("Train speakers:", len(train_label_map))
-    print("Train files:", len(train_utts))
-    print("Val speakers:", len(val_label_map))
-    print("Val files:", len(val_utts))
-    print("Test speakers:", len({u.speaker_id for u in test_utts}))
-    print("Test files:", len(test_utts))
     print("=" * 100)
     print(f"Run name: {run_name}")
     print(
         f"margin={margin} | P={p} | K={k} | emb_dim={emb_dim} | "
-        f"epochs={epochs} | lr={c.LEARNING_RATE}"
+        f"epochs={epochs} | lr={lr} | wd={weight_decay} | dropout={c.DROPOUT} | "
+        f"lr_scheduler={lr_scheduler_name}"
     )
-    print(f"Run root: {run_root}")
-    print("=" * 100)
-
-    print("USE_PRECOMPUTED_FEATURES:", c.USE_PRECOMPUTED_FEATURES)
-    print("TRAIN_ROOT:", c.TRAIN_ROOT)
-    print("VAL_ROOT:", c.VAL_ROOT)
-    print("TRAIN_FEAT_ROOT:", c.TRAIN_FEAT_ROOT)
-    print("VAL_FEAT_ROOT:", c.VAL_FEAT_ROOT)
-    print("P:", p, "K:", k, "batch_size:", p * k)
     print("=" * 100)
 
     if c.USE_PRECOMPUTED_FEATURES:
@@ -207,24 +239,17 @@ def main():
         n_feats=c.N_MELS,
         num_classes=num_classes,
         emb_dim=emb_dim,
-        dropout=0.3,
+        dropout=c.DROPOUT,
     ).to(device)
 
     triplet_loss = BatchHardTripletLoss(margin=margin, normalize=True)
 
     optimizer = torch.optim.Adam(
         model.parameters(),
-        lr=c.LEARNING_RATE,
-        weight_decay=c.WEIGHT_DECAY,
+        lr=lr,
+        weight_decay=weight_decay,
     )
-
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="min",
-        factor=c.LR_FACTOR,
-        patience=c.LR_PATIENCE,
-        min_lr=c.MIN_LR,
-    )
+    scheduler = build_scheduler(optimizer, scheduler_name=lr_scheduler_name, epochs=epochs)
 
     writer = SummaryWriter(log_dir=str(tb_dir))
 
@@ -242,12 +267,14 @@ def main():
                 f"K={k}",
                 f"batch_size_train={p * k}",
                 f"batch_size_val={c.BATCH_SIZE}",
-                f"lr={c.LEARNING_RATE}",
-                f"weight_decay={c.WEIGHT_DECAY}",
-                f"lr_scheduler={c.LR_SCHEDULER}",
-                f"lr_factor={c.LR_FACTOR}",
-                f"lr_patience={c.LR_PATIENCE}",
-                f"min_lr={c.MIN_LR}",
+                f"lr={lr}",
+                f"weight_decay={weight_decay}",
+                f"dropout={c.DROPOUT}",
+                f"lr_scheduler={lr_scheduler_name}",
+                f"lr_factor={None}",
+                f"lr_patience={None}",
+                f"min_lr={c.COSINE_ETA_MIN if lr_scheduler_name == 'cosine' else None}",
+                f"cosine_t_max={c.COSINE_T_MAX if lr_scheduler_name == 'cosine' else None}",
                 f"epochs={epochs}",
                 f"run_root={run_root}",
                 f"best_model_path={best_model_path}",
@@ -257,7 +284,7 @@ def main():
         0,
     )
 
-    patience = 7
+    patience = 5
     min_delta = 1e-4
     best_val_loss = float("inf")
     bad_epochs = 0
@@ -285,10 +312,14 @@ def main():
             desc=f"val {epoch + 1}/{epochs}",
         )
 
-        scheduler.step(va_loss)
-
         elapsed = time.perf_counter() - start
         current_lr = optimizer.param_groups[0]["lr"]
+
+        if scheduler is not None:
+            if lr_scheduler_name == "plateau":
+                scheduler.step(va_loss)
+            else:
+                scheduler.step()
 
         writer.add_scalar("loss/train", tr_loss, epoch + 1)
         writer.add_scalar("loss/val", va_loss, epoch + 1)
@@ -301,6 +332,7 @@ def main():
             optimizer=optimizer,
             epoch=epoch + 1,
             best_val_loss=best_val_loss,
+            scheduler=scheduler,
         )
 
         improved = va_loss < best_val_loss - min_delta
@@ -313,6 +345,7 @@ def main():
                 optimizer=optimizer,
                 epoch=epoch + 1,
                 best_val_loss=best_val_loss,
+                scheduler=scheduler,
             )
         else:
             bad_epochs += 1
