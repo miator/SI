@@ -3,20 +3,7 @@ import sys
 import time
 
 EXPERIMENTS = [
-    ["--margin", "0.25"],
-    ["--margin", "0.30"],
-    ["--margin", "0.35"],
-    ["--margin", "0.40"],
-
-    ["--p", "16", "--k", "4"],
-    ["--p", "10", "--k", "6"],
-    ["--p", "8", "--k", "8"],
-
-    ["--emb-dim", "128"],
-    ["--emb-dim", "256"],
-
-    ["--margin", "0.30", "--p", "16", "--k", "4"],
-    ["--margin", "0.30", "--p", "16", "--k", "4", "--emb-dim", "256"],
+    ["--margin", "0.22", "--p", "12", "--k", "5", "--emb-dim", "192", "--wd", "5e-5", "--lr-scheduler", "none"],
 ]
 
 for i, params in enumerate(EXPERIMENTS, start=1):
