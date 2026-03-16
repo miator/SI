@@ -24,7 +24,7 @@ from samplers import PKSampler
 
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
-torch.set_num_threads(6)
+# torch.set_num_threads(4)
 torch.set_num_interop_threads(1)
 
 
@@ -47,6 +47,13 @@ def parse_args():
         help="Learning-rate scheduler override.",
     )
     parser.add_argument("--wd", type=float, default=None, help="Weight decay override.")
+    parser.add_argument(
+        "--train-feature-mode",
+        type=str,
+        default=None,
+        choices=["clean", "noise", "clean+noise"],
+        help="Which precomputed train feature set(s) to use.",
+    )
     return parser.parse_args()
 
 
@@ -140,6 +147,7 @@ def main():
     lr = c.LEARNING_RATE if args.lr is None else args.lr
     weight_decay = c.WEIGHT_DECAY if args.wd is None else args.wd
     lr_scheduler_name = c.LR_SCHEDULER if args.lr_scheduler is None else args.lr_scheduler
+    train_feature_mode = c.TRAIN_FEATURE_MODE if args.train_feature_mode is None else args.train_feature_mode
 
     run_name = args.run_name or make_run_name(
         margin=margin,
@@ -180,16 +188,22 @@ def main():
     )
     print("=" * 100)
 
+    train_feat_roots = None
     if c.USE_PRECOMPUTED_FEATURES:
+        train_feat_roots = c.get_train_feat_roots(train_feature_mode)
         train_ds = PrecomputedFeatureDataset(
             train_utts,
             split_root=c.TRAIN_ROOT,
-            feat_root=c.TRAIN_FEAT_ROOT,
+            feat_root=train_feat_roots,
         )
         val_ds = PrecomputedFeatureDataset(
             val_utts,
             split_root=c.VAL_ROOT,
             feat_root=c.VAL_FEAT_ROOT,
+        )
+        print(
+            f"Using precomputed features: "
+            f"train={train_feat_roots} | val={c.VAL_FEAT_ROOT}"
         )
     else:
         fe = LogMelExtraction(
@@ -207,7 +221,7 @@ def main():
         val_ds = AudioDataset(val_utts, c.SAMPLE_RATE, fe)
         print("Using on-the-fly log-mel extraction.")
 
-    train_labels = [u.label for u in train_utts]
+    train_labels = train_ds.labels
     sampler = PKSampler(train_labels, P=p, K=k, seed=37)
 
     collate = partial(pad_trunc_collate_fn, max_frames=c.MAX_FRAMES)
@@ -219,9 +233,9 @@ def main():
         shuffle=False,
         drop_last=True,
         collate_fn=collate,
-        num_workers=7,
-        prefetch_factor=1,
-        persistent_workers=False,
+        num_workers=6,
+        prefetch_factor=2,
+        persistent_workers=True,
     )
 
     val_loader = DataLoader(
@@ -229,9 +243,9 @@ def main():
         batch_size=c.BATCH_SIZE,
         shuffle=False,
         collate_fn=collate,
-        num_workers=7,
-        prefetch_factor=1,
-        persistent_workers=False,
+        num_workers=6,
+        prefetch_factor=2,
+        persistent_workers=True,
     )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -271,6 +285,8 @@ def main():
                 f"weight_decay={weight_decay}",
                 f"dropout={c.DROPOUT}",
                 f"lr_scheduler={lr_scheduler_name}",
+                f"train_feature_mode={train_feature_mode}",
+                f"train_feat_roots={','.join(str(path) for path in train_feat_roots) if c.USE_PRECOMPUTED_FEATURES else 'on_the_fly'}",
                 f"lr_factor={None}",
                 f"lr_patience={None}",
                 f"min_lr={c.COSINE_ETA_MIN if lr_scheduler_name == 'cosine' else None}",
