@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -52,8 +53,53 @@ PRECOMPUTED_ROOT = Path(
     r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\logmel_cache"
 )
 
-TRAIN_FEAT_ROOT = PRECOMPUTED_ROOT / "train"
+MUSAN_NOISE_ROOT = Path(
+    r"C:\Users\User\Desktop\Data\musan\musan\noise"
+)
+
+TRAIN_CLEAN_FEAT_ROOT = PRECOMPUTED_ROOT / "train"
+TRAIN_NOISE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_noise"
 VAL_FEAT_ROOT = PRECOMPUTED_ROOT / "val"
 TEST_FEAT_ROOT = PRECOMPUTED_ROOT / "test"
 
+TRAIN_FEAT_ROOT = TRAIN_CLEAN_FEAT_ROOT
+
 USE_PRECOMPUTED_FEATURES = True
+TRAIN_FEATURE_MODE = "clean+noise"
+
+USE_NOISE_AUG = False
+NOISE_PROB = 0.5
+SNR_MIN = 10.0
+SNR_MAX = 20.0
+MIN_NOISE_SECONDS = 3.0
+
+
+def get_train_feat_roots(train_feature_mode: Optional[str] = None):
+    mode = TRAIN_FEATURE_MODE if train_feature_mode is None else train_feature_mode
+    if mode == "clean":
+        return [TRAIN_CLEAN_FEAT_ROOT]
+    if mode == "noise":
+        return [TRAIN_NOISE_FEAT_ROOT]
+    if mode == "clean+noise":
+        return [TRAIN_CLEAN_FEAT_ROOT, TRAIN_NOISE_FEAT_ROOT]
+    raise ValueError(f"Unsupported TRAIN_FEATURE_MODE: {mode}")
+
+
+def get_augmentation_metadata(
+    train_feature_mode: Optional[str] = None,
+    use_noise_aug: Optional[bool] = None,
+):
+    mode = TRAIN_FEATURE_MODE if train_feature_mode is None else train_feature_mode
+    use_aug = USE_NOISE_AUG if use_noise_aug is None else use_noise_aug
+    has_noise = mode != "clean" or use_aug
+
+    return {
+        "augmentation": "musan_noise" if has_noise else "clean",
+        "train_feature_mode": mode,
+        "use_noise_aug": bool(use_aug),
+        "noise_prob": NOISE_PROB if has_noise else 0.0,
+        "snr_min": SNR_MIN if has_noise else None,
+        "snr_max": SNR_MAX if has_noise else None,
+        "min_noise_seconds": MIN_NOISE_SECONDS if has_noise else None,
+        "musan_noise_root": str(MUSAN_NOISE_ROOT) if has_noise else None,
+    }
