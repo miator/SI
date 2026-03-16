@@ -17,7 +17,6 @@ def sec_to_hms(seconds: float) -> str:
 
 
 def percentile(sorted_vals: list[float], p: float) -> float:
-    # p in [0, 100]
     if not sorted_vals:
         return 0.0
     if p <= 0:
@@ -36,8 +35,14 @@ def percentile(sorted_vals: list[float], p: float) -> float:
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--root",
+        type=Path,
+        default=Path(r"C:\Users\User\Desktop\Data\musan\musan\noise"),
+        help="Dataset root to scan.",
+    )
 
-    ap.add_argument("--ext", type=str, default=".flac", help="Audio extension to scan (default: .flac)")
+    ap.add_argument("--ext", type=str, default=".wav", help="Audio extension to scan (default: .wav)")
     ap.add_argument(
         "--bin",
         type=float,
@@ -50,35 +55,27 @@ def main():
         default=40,
         help="Max histogram bins printed (default: 40). Last bin is overflow.",
     )
-    ap.add_argument(
-        "--write_csv",
-        action="store_true",
-        help="Write per-speaker CSV summary in the current directory.",
-    )
     args = ap.parse_args()
 
-    ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech\train-clean-100")
+    ROOT = args.root.expanduser()
     EXT = args.ext.lower()
 
     if not ROOT.exists():
         raise FileNotFoundError(f"Root does not exist: {ROOT}")
 
-    speaker_dirs = sorted([p for p in ROOT.iterdir() if p.is_dir()], key=lambda p: p.name)
+    source_dirs = sorted([p for p in ROOT.iterdir() if p.is_dir()], key=lambda p: p.name)
     print("Root:", ROOT)
-    print("Speakers:", len(speaker_dirs))
+    print("Subfolders:", len(source_dirs))
     print("Extension:", EXT)
 
     ext_cnt = Counter()
     sr_cnt = Counter()
     ch_cnt = Counter()
 
-    # Per speaker
-    spk_utt_counts: dict[str, int] = {}
-    spk_book_counts: dict[str, int] = {}
-    spk_seconds: dict[str, float] = {}
-
-    # Per book (optional useful stat)
-    books_per_speaker = []
+    # Per immediate subfolder under root.
+    folder_file_counts: dict[str, int] = {}
+    folder_seconds: dict[str, float] = {}
+    folder_bad_counts: dict[str, int] = {}
 
     # Per utterance durations
     durs = []
@@ -101,40 +98,33 @@ def main():
         else:
             hist[idx] += 1
 
-    for spk_dir in speaker_dirs:
-        book_dirs = sorted([b for b in spk_dir.iterdir() if b.is_dir()], key=lambda p: p.name)
-        spk_book_counts[spk_dir.name] = len(book_dirs)
-        books_per_speaker.append(len(book_dirs))
+    files = sorted([p for p in ROOT.rglob(f"*{EXT}") if p.is_file()])
+    for p in files:
+        rel = p.relative_to(ROOT)
+        folder = rel.parts[0] if len(rel.parts) > 1 else ROOT.name
 
-        files = sorted([p for p in spk_dir.rglob(f"*{EXT}") if p.is_file()])
-        spk_ok = 0
-        spk_sec = 0.0
+        total_files += 1
+        ext_cnt[p.suffix.lower()] += 1
 
-        for p in files:
-            total_files += 1
-            ext_cnt[p.suffix.lower()] += 1
+        # Try metadata first (cheap)
+        try:
+            info = torchaudio.info(str(p))
+        except Exception as e:
+            bad_info.append((str(p), repr(e)))
+            folder_bad_counts[folder] = folder_bad_counts.get(folder, 0) + 1
+            continue
 
-            # Try metadata first (cheap)
-            try:
-                info = torchaudio.info(str(p))
-            except Exception as e:
-                bad_info.append((str(p), repr(e)))
-                continue
+        sr_cnt[int(info.sample_rate)] += 1
+        ch_cnt[int(info.num_channels)] += 1
 
-            sr_cnt[int(info.sample_rate)] += 1
-            ch_cnt[int(info.num_channels)] += 1
+        # Duration from metadata
+        dur = float(info.num_frames) / float(info.sample_rate) if info.sample_rate > 0 else 0.0
+        folder_file_counts[folder] = folder_file_counts.get(folder, 0) + 1
+        folder_seconds[folder] = folder_seconds.get(folder, 0.0) + dur
+        total_seconds += dur
 
-            # Duration from metadata
-            dur = float(info.num_frames) / float(info.sample_rate) if info.sample_rate > 0 else 0.0
-            spk_ok += 1
-            spk_sec += dur
-
-            durs.append(dur)
-            hist_add(dur)
-
-        spk_utt_counts[spk_dir.name] = spk_ok
-        spk_seconds[spk_dir.name] = spk_sec
-        total_seconds += spk_sec
+        durs.append(dur)
+        hist_add(dur)
 
     print("\n--- Extensions (all files found) ---")
     for k, v in ext_cnt.most_common():
@@ -174,34 +164,29 @@ def main():
         if hist[-1] > 0:
             print(f"[{(nb-1)*bin_w:5.1f}, +inf): {hist[-1]}")
 
-    # Speaker distribution stats
-    spk_secs_sorted = sorted(spk_seconds.items(), key=lambda x: x[1])
+    # Per-folder stats
+    folder_secs_sorted = sorted(folder_seconds.items(), key=lambda x: x[1])
 
-    print("\n--- Per-speaker distribution ---")
-    print("Speakers with any decoded files:", len(spk_secs_sorted))
-    if spk_secs_sorted:
-        secs_only = sorted([v for _, v in spk_secs_sorted])
-        print("Speaker total duration: min/avg/max =",
+    print("\n--- Per-folder distribution ---")
+    print("Folders with any decoded files:", len(folder_secs_sorted))
+    if folder_secs_sorted:
+        secs_only = sorted([v for _, v in folder_secs_sorted])
+        counts_only = [folder_file_counts[name] for name, _ in folder_secs_sorted]
+        print("Folder total duration: min/avg/max =",
               sec_to_hms(secs_only[0]),
               sec_to_hms(sum(secs_only)/len(secs_only)),
               sec_to_hms(secs_only[-1]))
-        print("Speaker total utterances: min/avg/max =",
-              min(spk_utt_counts.values()),
-              f"{sum(spk_utt_counts.values())/len(spk_utt_counts):.2f}",
-              max(spk_utt_counts.values()))
-        if books_per_speaker:
-            print("Books per speaker: min/avg/max =",
-                  min(books_per_speaker),
-                  f"{sum(books_per_speaker)/len(books_per_speaker):.2f}",
-                  max(books_per_speaker))
+        print("Folder file counts: min/avg/max =",
+              min(counts_only),
+              f"{sum(counts_only)/len(counts_only):.2f}",
+              max(counts_only))
 
-    print("\nBottom 10 speakers by total seconds:")
-    for spk, sec in spk_secs_sorted[:10]:
-        print(f"{spk}: {sec_to_hms(sec)} | utt={spk_utt_counts.get(spk, 0)} | books={spk_book_counts.get(spk, 0)}")
-
-    print("\nTop 10 speakers by total seconds:")
-    for spk, sec in spk_secs_sorted[-10:][::-1]:
-        print(f"{spk}: {sec_to_hms(sec)} | utt={spk_utt_counts.get(spk, 0)} | books={spk_book_counts.get(spk, 0)}")
+    print("\nFolders by total seconds:")
+    for folder, sec in folder_secs_sorted:
+        print(
+            f"{folder}: {sec_to_hms(sec)} | files={folder_file_counts.get(folder, 0)}"
+            f" | bad={folder_bad_counts.get(folder, 0)}"
+        )
 
     print("\n--- Bad files ---")
     print("info() failures:", len(bad_info))
