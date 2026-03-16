@@ -90,7 +90,10 @@ def save_feature_tensor(path: Path, feat: torch.Tensor):
 
 
 def load_feature_tensor(path: Path) -> torch.Tensor:
-    feat = torch.load(path, map_location="cpu")
+    try:
+        feat = torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        feat = torch.load(path, map_location="cpu")
     if not isinstance(feat, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor in {path}, got {type(feat)}")
     return feat.float()
@@ -113,6 +116,7 @@ class AudioDataset(Dataset):
         self.sample_rate = sample_rate
         self.fe = feature_extractor
         self.waveform_transform = waveform_transform
+        self.labels = [int(sample.label) for sample in self.utterances]
 
     def __len__(self) -> int:
         return len(self.utterances)
@@ -152,7 +156,7 @@ class PrecomputedFeatureDataset(Dataset):
     """
     Returns precomputed features (frames, n_feats) and label.
     Expects .pt tensors already saved on disk.
-    Optimized: all file paths and labels are prepared once in __init__.
+    Stores compact metadata so worker startup is lighter on Windows.
     """
     def __init__(self, utterances: Sequence[Utterance], split_root: PathLike, feat_root: PathLike):
         self.split_root = Path(split_root)
@@ -165,27 +169,35 @@ class PrecomputedFeatureDataset(Dataset):
         if not feat_roots:
             raise ValueError("feat_root must contain at least one feature root")
 
-        self.samples: List[Tuple[Path, torch.Tensor]] = []
+        self.feat_roots = feat_roots
+        self.rel_feature_paths: List[Path] = []
+        self.labels: List[int] = []
 
-        for root in feat_roots:
-            for u in utterances:
-                if u.label is None:
-                    raise ValueError(
-                        "All utterances must already have numeric labels. "
-                        "Use attach_labels(...) before creating PrecomputedFeatureDataset."
-                    )
+        for u in utterances:
+            if u.label is None:
+                raise ValueError(
+                    "All utterances must already have numeric labels. "
+                    "Use attach_labels(...) before creating PrecomputedFeatureDataset."
+                )
 
-                feat_path = wav_path_to_feature_path(u.path, self.split_root, root)
+            rel_feat_path = u.path.relative_to(self.split_root).with_suffix(".pt")
+
+            for root in self.feat_roots:
+                feat_path = root / rel_feat_path
                 if not feat_path.exists():
                     raise FileNotFoundError(f"Missing precomputed feature file: {feat_path}")
 
-                label_tensor = torch.tensor(u.label, dtype=torch.long)
-                self.samples.append((feat_path, label_tensor))
+            self.rel_feature_paths.append(rel_feat_path)
+            self.labels.append(int(u.label))
+
+        self.samples_per_root = len(self.rel_feature_paths)
 
     def __len__(self) -> int:
-        return len(self.samples)
+        return self.samples_per_root * len(self.feat_roots)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        feat_path, label = self.samples[idx]
+        root_idx, sample_idx = divmod(idx, self.samples_per_root)
+        feat_path = self.feat_roots[root_idx] / self.rel_feature_paths[sample_idx]
         feat = load_feature_tensor(feat_path)
+        label = torch.tensor(self.labels[sample_idx], dtype=torch.long)
         return feat, label
