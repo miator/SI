@@ -52,18 +52,6 @@ def parse_args():
         required=True,
         help="Experiment folder name under runs/, or a full path to the experiment folder.",
     )
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=4,
-        help="DataLoader worker count for embedding extraction.",
-    )
-    parser.add_argument(
-        "--prefetch-factor",
-        type=int,
-        default=2,
-        help="DataLoader prefetch factor used when num_workers > 0.",
-    )
     return parser.parse_args()
 
 
@@ -323,8 +311,6 @@ def evaluate_split(
     output_dir: Path,
     experiment_name: str,
     hparams: dict,
-    num_workers: int,
-    prefetch_factor: int,
     same_pairs: int = 10000,
     diff_pairs: int = 10000,
     seed: int = 37,
@@ -369,19 +355,14 @@ def evaluate_split(
 
     collate = partial(pad_trunc_collate_verify, max_frames=c.MAX_FRAMES)
 
-    loader_kwargs = dict(
+    loader = DataLoader(
+        ds,
         batch_size=c.BATCH_SIZE,
         shuffle=False,
         collate_fn=collate,
-        num_workers=num_workers,
-    )
-    if num_workers > 0:
-        loader_kwargs["prefetch_factor"] = prefetch_factor
-        loader_kwargs["persistent_workers"] = True
-
-    loader = DataLoader(
-        ds,
-        **loader_kwargs,
+        num_workers=6,
+        prefetch_factor=2,
+        persistent_workers=True
     )
 
     embeddings, speaker_ids, paths = extract_embeddings(model, loader, device)
@@ -494,8 +475,6 @@ def main():
             output_dir=verify_dir,
             experiment_name=experiment_name,
             hparams=hparams,
-            num_workers=args.num_workers,
-            prefetch_factor=args.prefetch_factor,
         )
         rows.append(row)
 
