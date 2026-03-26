@@ -1,56 +1,96 @@
 import math
 import random
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import torch
 import torchaudio
+
+import constants as c
+
+
+def scan_noise_files(
+    noise_root,
+    sample_rate: int,
+    min_noise_seconds: float = 3.0,
+) -> List[Path]:
+    noise_root = Path(noise_root)
+    min_noise_samples = int(round(sample_rate * min_noise_seconds))
+
+    if not noise_root.exists():
+        raise FileNotFoundError(f"MUSAN noise root does not exist: {noise_root}")
+
+    valid_paths: List[Path] = []
+    for path in sorted(noise_root.rglob("*.wav")):
+        try:
+            info = torchaudio.info(str(path))
+        except RuntimeError:
+            continue
+
+        if info.sample_rate != sample_rate:
+            continue
+        if info.num_frames < min_noise_samples:
+            continue
+        valid_paths.append(path)
+
+    return valid_paths
+
+
+def split_noise_paths(
+    noise_paths: List[Path],
+    train_fraction: float = c.NOISE_TRAIN_FILES_FRACTION,
+    seed: int = c.NOISE_SPLIT_SEED,
+) -> tuple[List[Path], List[Path]]:
+    if not noise_paths:
+        return [], []
+
+    rng = random.Random(seed)
+    shuffled = list(noise_paths)
+    rng.shuffle(shuffled)
+
+    if len(shuffled) == 1:
+        return shuffled, []
+
+    split_idx = int(round(len(shuffled) * train_fraction))
+    split_idx = max(1, min(len(shuffled) - 1, split_idx))
+    return shuffled[:split_idx], shuffled[split_idx:]
 
 
 class AdditiveNoise:
     def __init__(
         self,
-        noise_root,
         sample_rate: int,
+        noise_root=None,
         prob: float = 0.5,
         snr_min: float = 10.0,
         snr_max: float = 20.0,
         min_noise_seconds: float = 3.0,
+        noise_paths: Optional[List[Path]] = None,
         eps: float = 1e-8,
     ):
-        self.noise_root = Path(noise_root)
+        self.noise_root = Path(noise_root) if noise_root is not None else None
         self.sample_rate = sample_rate
         self.prob = prob
         self.snr_min = snr_min
         self.snr_max = snr_max
         self.min_noise_seconds = min_noise_seconds
         self.eps = eps
-        self.min_noise_samples = int(round(sample_rate * min_noise_seconds))
-        self.noise_paths = self._scan_noise_files()
+
+        if noise_paths is not None:
+            self.noise_paths = [Path(path) for path in noise_paths]
+        elif self.noise_root is not None:
+            self.noise_paths = scan_noise_files(
+                self.noise_root,
+                sample_rate=self.sample_rate,
+                min_noise_seconds=self.min_noise_seconds,
+            )
+        else:
+            self.noise_paths = []
 
         if not self.noise_paths:
             raise RuntimeError(
-                f"No valid noise wav files >= {min_noise_seconds:.2f}s found in {self.noise_root}"
+                "At least one external noise source must be enabled."
             )
-
-    def _scan_noise_files(self) -> List[Path]:
-        if not self.noise_root.exists():
-            raise FileNotFoundError(f"MUSAN noise root does not exist: {self.noise_root}")
-
-        valid_paths: List[Path] = []
-        for path in sorted(self.noise_root.rglob("*.wav")):
-            try:
-                info = torchaudio.info(str(path))
-            except RuntimeError:
-                continue
-
-            if info.sample_rate != self.sample_rate:
-                continue
-            if info.num_frames < self.min_noise_samples:
-                continue
-            valid_paths.append(path)
-
-        return valid_paths
 
     def _load_noise(self, path: Path) -> torch.Tensor:
         wav, sr = torchaudio.load(str(path))
