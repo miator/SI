@@ -57,10 +57,16 @@ MUSAN_NOISE_ROOT = Path(
     r"C:\Users\User\Desktop\Data\musan\musan\noise"
 )
 
+NOISE_SPLIT_SEED = 37
+NOISE_TRAIN_FILES_FRACTION = 0.8
+
 TRAIN_CLEAN_FEAT_ROOT = PRECOMPUTED_ROOT / "train"
 TRAIN_NOISE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_noise"
 VAL_FEAT_ROOT = PRECOMPUTED_ROOT / "val"
 TEST_FEAT_ROOT = PRECOMPUTED_ROOT / "test"
+VAL_NOISY_SNR15_FEAT_ROOT = PRECOMPUTED_ROOT / "val_noisy_snr15"
+TEST_NOISY_SNR15_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noisy_snr15"
+TEST_NOISY_SNR10_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noisy_snr10"
 
 TRAIN_FEAT_ROOT = TRAIN_CLEAN_FEAT_ROOT
 
@@ -72,6 +78,41 @@ NOISE_PROB = 0.5
 SNR_MIN = 10.0
 SNR_MAX = 20.0
 MIN_NOISE_SECONDS = 3.0
+
+
+def get_eval_split_definitions():
+    return {
+        "val": {
+            "wav_root": Path(VAL_ROOT),
+            "feat_root": VAL_FEAT_ROOT,
+            "snr": None,
+            "is_noisy": False,
+        },
+        "val_noisy_snr15": {
+            "wav_root": Path(VAL_ROOT),
+            "feat_root": VAL_NOISY_SNR15_FEAT_ROOT,
+            "snr": 15.0,
+            "is_noisy": True,
+        },
+        "test": {
+            "wav_root": Path(TEST_ROOT),
+            "feat_root": TEST_FEAT_ROOT,
+            "snr": None,
+            "is_noisy": False,
+        },
+        "test_noisy_snr15": {
+            "wav_root": Path(TEST_ROOT),
+            "feat_root": TEST_NOISY_SNR15_FEAT_ROOT,
+            "snr": 15.0,
+            "is_noisy": True,
+        },
+        "test_noisy_snr10": {
+            "wav_root": Path(TEST_ROOT),
+            "feat_root": TEST_NOISY_SNR10_FEAT_ROOT,
+            "snr": 10.0,
+            "is_noisy": True,
+        },
+    }
 
 
 def get_train_feat_roots(train_feature_mode: Optional[str] = None):
