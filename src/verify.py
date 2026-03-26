@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
+from typing import Iterable
 
 import torch
 import torch.nn.functional as F
@@ -29,6 +30,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
 SUMMARY_FIELDNAMES = [
     "experiment",
+    "checkpoint_type",
     "split",
     "auc",
     "eer",
@@ -51,6 +53,19 @@ def parse_args():
         "--experiment",
         required=True,
         help="Experiment folder name under runs/, or a full path to the experiment folder.",
+    )
+    parser.add_argument(
+        "--eval-splits",
+        nargs="+",
+        default=["val", "val_noisy_snr15", "test", "test_noisy_snr15", "test_noisy_snr10"],
+        help="Evaluation splits to score.",
+    )
+    parser.add_argument(
+        "--checkpoint-type",
+        type=str,
+        default="best",
+        choices=["best", "last"],
+        help="Which checkpoint to evaluate.",
     )
     return parser.parse_args()
 
@@ -97,17 +112,26 @@ def resolve_run_root(experiment_arg: str) -> Path:
     return run_root
 
 
-def resolve_checkpoint_path(run_root: Path) -> Path:
-    candidates = [
-        run_root / "checkpoints" / "best.pt",
-        run_root / "checkpoints" / "best_val_loss.pt",
-    ]
+def resolve_checkpoint_path(run_root: Path, checkpoint_type: str) -> Path:
+    if checkpoint_type == "best":
+        candidates = [
+            run_root / "checkpoints" / "best.pt",
+            run_root / "checkpoints" / "best_val_loss.pt",
+        ]
+    elif checkpoint_type == "last":
+        candidates = [
+            run_root / "checkpoints" / "last.pt",
+            run_root / "checkpoints" / "last_epoch.pt",
+        ]
+    else:
+        raise ValueError(f"Unsupported checkpoint_type: {checkpoint_type}")
+
     for path in candidates:
         if path.exists():
             return path
 
     raise FileNotFoundError(
-        "Could not find a best checkpoint. Looked for:\n"
+        f"Could not find a {checkpoint_type} checkpoint. Looked for:\n"
         + "\n".join(str(path) for path in candidates)
     )
 
@@ -142,8 +166,37 @@ def write_metrics_rows(csv_path: Path, rows):
         writer.writerows(rows)
 
 
+def load_metrics_rows(csv_path: Path):
+    if not csv_path.exists():
+        return []
+
+    with csv_path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = []
+        for row in reader:
+            if "checkpoint_type" not in row or not row.get("checkpoint_type"):
+                row["checkpoint_type"] = "best"
+            rows.append(row)
+        return rows
+
+
+def upsert_metrics_rows(csv_path: Path, rows: Iterable[dict]):
+    existing_rows = load_metrics_rows(csv_path)
+    rows_by_key = {
+        (row["experiment"], row["checkpoint_type"], row["split"]): row
+        for row in existing_rows
+    }
+    for row in rows:
+        rows_by_key[(row["experiment"], row["checkpoint_type"], row["split"])] = row
+
+    merged_rows = list(rows_by_key.values())
+    merged_rows.sort(key=lambda row: (row["experiment"], row["checkpoint_type"], row["split"]))
+    write_metrics_rows(csv_path, merged_rows)
+
+
 def build_metrics_row(
     experiment_name: str,
+    checkpoint_type: str,
     split_name: str,
     metrics: dict,
     same_scores: torch.Tensor,
@@ -152,6 +205,7 @@ def build_metrics_row(
 ) -> dict:
     return {
         "experiment": experiment_name,
+        "checkpoint_type": checkpoint_type,
         "split": split_name,
         "auc": float(metrics["auc"]),
         "eer": float(metrics["eer"]),
@@ -306,7 +360,9 @@ def cosine_scores_from_pairs(embeddings: torch.Tensor, pairs):
 def evaluate_split(
     model,
     split_name: str,
+    checkpoint_type: str,
     split_root: Path,
+    feat_root: Path,
     device: str,
     output_dir: Path,
     experiment_name: str,
@@ -318,15 +374,6 @@ def evaluate_split(
     utterances = scan_split(split_root)
     if len(utterances) == 0:
         raise RuntimeError(f"No utterances found in split: {split_name}")
-
-    if split_name == "val":
-        split_root = c.VAL_ROOT
-        feat_root = c.VAL_FEAT_ROOT
-    elif split_name == "test":
-        split_root = c.TEST_ROOT
-        feat_root = c.TEST_FEAT_ROOT
-    else:
-        raise ValueError(f"Unsupported split_name: {split_name}")
 
     if c.USE_PRECOMPUTED_FEATURES:
         ds = VerificationDataset(
@@ -401,6 +448,7 @@ def evaluate_split(
 
     row = build_metrics_row(
         experiment_name=experiment_name,
+        checkpoint_type=checkpoint_type,
         split_name=split_name,
         metrics=metrics,
         same_scores=same_scores,
@@ -411,6 +459,7 @@ def evaluate_split(
     torch.save(
         {
             "experiment": experiment_name,
+            "checkpoint_type": checkpoint_type,
             "split": split_name,
             "embeddings": embeddings,
             "speaker_ids": speaker_ids,
@@ -420,7 +469,7 @@ def evaluate_split(
             "metrics": metrics,
             "summary_row": row,
         },
-        output_dir / f"{split_name}_embeddings.pt"
+        output_dir / f"{split_name}_{checkpoint_type}_embeddings.pt"
     )
 
     return row
@@ -443,7 +492,7 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    ckpt_path = resolve_checkpoint_path(run_root)
+    ckpt_path = resolve_checkpoint_path(run_root, args.checkpoint_type)
     ckpt = torch.load(ckpt_path, map_location=device)
 
     emb_dim = infer_emb_dim_from_checkpoint(
@@ -463,14 +512,22 @@ def main():
     model.load_state_dict(ckpt["model_state_dict"])
 
     rows = []
-    for split_name, split_root in (
-        ("val", Path(c.VAL_ROOT)),
-        ("test", Path(c.TEST_ROOT)),
-    ):
+    eval_definitions = c.get_eval_split_definitions()
+
+    for split_name in args.eval_splits:
+        if split_name not in eval_definitions:
+            raise ValueError(
+                f"Unsupported split '{split_name}'. "
+                f"Supported: {', '.join(eval_definitions.keys())}"
+            )
+
+        split_def = eval_definitions[split_name]
         row = evaluate_split(
             model,
             split_name,
-            split_root,
+            args.checkpoint_type,
+            Path(split_def["wav_root"]),
+            Path(split_def["feat_root"]),
             device=device,
             output_dir=verify_dir,
             experiment_name=experiment_name,
@@ -478,13 +535,11 @@ def main():
         )
         rows.append(row)
 
-    write_metrics_rows(per_run_csv, rows)
-
-    for row in rows:
-        append_metrics_row(global_csv, row)
+    upsert_metrics_rows(per_run_csv, rows)
+    upsert_metrics_rows(global_csv, rows)
 
     print(f"\nPer-run summary saved to: {per_run_csv}")
-    print(f"Global summary appended to: {global_csv}")
+    print(f"Global summary updated at: {global_csv}")
 
 
 if __name__ == "__main__":
