@@ -11,29 +11,19 @@ from typing import List, Optional
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-COOL_DOWN_SECONDS = 1
+COOL_DOWN_SECONDS = 90
+
+DEFAULT_FULL_EXPERIMENTS = [
+    "musan_snr20_p050",
+    "musan_snr20_p035",
+]
+
 DEFAULT_EVAL_SPLITS = [
     "val",
     "val_noisy_snr15",
     "test",
     "test_noisy_snr15",
     "test_noisy_snr10",
-]
-DEFAULT_NOISY_EVAL_ONLY_RUNS = [
-    "cnn1d_emb192_noise_snr10",
-    "cnn1d_emb192_noise_snr15",
-    "cnn1d_emb192_noise_snr20",
-    "cnn1d_emb192_noise_snr25",
-    "cnn1d_noise+clean_01",
-]
-DEFAULT_NOISY_EVAL_SPLITS = [
-    "val_noisy_snr15",
-    "test_noisy_snr15",
-    "test_noisy_snr10",
-]
-DEFAULT_CLEAN_LAST_SPLITS = [
-    "val",
-    "test",
 ]
 
 BASE_TRAIN_ARGS = [
@@ -50,24 +40,36 @@ BASE_TRAIN_ARGS = [
 @dataclass(frozen=True)
 class TrainNoiseConfig:
     label: str
-    use_musan: bool
+    noise_kind: str  # "clean", "musan", "white", "musan+white"
     snr_min: Optional[float] = None
     snr_max: Optional[float] = None
     noise_prob: float = 1.0
 
     @property
     def uses_noise(self) -> bool:
-        return self.use_musan
+        return self.noise_kind != "clean"
 
     @property
     def feature_mode(self) -> str:
-        return "clean+noise" if self.uses_noise else "clean"
+        mapping = {
+            "clean": "clean",
+            "musan": "clean+noise",
+            "white": "clean+white",
+            "white_mild": "clean+white_mild",
+            "musan+white": "clean+musan+white",
+        }
+        return mapping[self.noise_kind]
 
     @property
     def train_noise_root_name(self) -> Optional[str]:
-        if not self.uses_noise:
-            return None
-        return f"train_noise_{self.label}"
+        mapping = {
+            "clean": None,
+            "musan": self.label,
+            "white": self.label,
+            "white_mild": self.label,
+            "musan+white": self.label,
+        }
+        return mapping[self.noise_kind]
 
 
 @dataclass(frozen=True)
@@ -78,24 +80,26 @@ class ExperimentConfig:
 
 
 EXPERIMENTS = {
-    "clean_baseline": ExperimentConfig(
-        name="clean_baseline",
-        run_name="cnn1d_emb192_m022_P12K5_clean_baseline",
+    "musan_snr20_p050": ExperimentConfig(
+        name="musan_snr20_p050",
+        run_name="cnn1d_emb192_m022_P12K5_clean+musan_snr20_p050",
         train_noise=TrainNoiseConfig(
-            label="clean",
-            use_musan=False,
-            noise_prob=0.0,
+            label="train_noise_musan_snr20_p050",
+            noise_kind="musan",
+            snr_min=20.0,
+            snr_max=20.0,
+            noise_prob=0.5,
         ),
     ),
-    "musan_snr10_20": ExperimentConfig(
-        name="musan_snr10_20",
-        run_name="cnn1d_emb192_m022_P12K5_clean_plus_musan_snr10_20",
+    "musan_snr20_p035": ExperimentConfig(
+        name="musan_snr20_p035",
+        run_name="cnn1d_emb192_m022_P12K5_clean+musan_snr20_p035",
         train_noise=TrainNoiseConfig(
-            label="musan_snr10_20",
-            use_musan=True,
-            snr_min=10.0,
+            label="train_noise_musan_snr20_p035",
+            noise_kind="musan",
+            snr_min=20.0,
             snr_max=20.0,
-            noise_prob=1.0,
+            noise_prob=0.35,
         ),
     ),
 }
@@ -106,17 +110,10 @@ def parse_args():
         description="Precompute features, train, and verify the configured speaker-verification experiments."
     )
     parser.add_argument(
-        "--mode",
-        type=str,
-        default="overnight_eval",
-        choices=["full", "overnight_eval"],
-        help="Run the overnight evaluation-only queue or the normal pipeline.",
-    )
-    parser.add_argument(
         "--experiments",
         nargs="+",
         choices=list(EXPERIMENTS.keys()) + ["all"],
-        default=["all"],
+        default=DEFAULT_FULL_EXPERIMENTS,
         help="Which named experiments to run. Defaults to all.",
     )
     parser.add_argument(
@@ -150,19 +147,6 @@ def parse_args():
         type=int,
         default=COOL_DOWN_SECONDS,
         help="Cooldown between experiments.",
-    )
-    parser.add_argument(
-        "--existing-run-names",
-        nargs="+",
-        default=DEFAULT_NOISY_EVAL_ONLY_RUNS,
-        help="Already-trained run folder names to evaluate in overnight_eval mode.",
-    )
-    parser.add_argument(
-        "--clean-last-experiments",
-        nargs="+",
-        choices=list(EXPERIMENTS.keys()) + ["all"],
-        default=["all"],
-        help="Current run_experiments entries whose last.pt should be evaluated on clean splits in overnight_eval mode.",
     )
     return parser.parse_args()
 
@@ -244,13 +228,14 @@ def precompute_train_noise_features(config: ExperimentConfig, overwrite: bool = 
         f"""
         from pathlib import Path
         import constants as c
-        from augment import AdditiveNoise
+        from augment import AdditiveNoise, WhiteNoise, RandomChoiceAugment
         from features import LogMelExtraction
         from precompute_logmels import build_train_eval_noise_file_lists, precompute_split
 
-        train_noise_paths, _eval_noise_paths = build_train_eval_noise_file_lists()
-        c.TRAIN_NOISE_FEAT_ROOT = c.PRECOMPUTED_ROOT / "{config.train_noise.train_noise_root_name}"
-        c.TRAIN_NOISE_FEAT_ROOT.mkdir(parents=True, exist_ok=True)
+        train_noise_paths, _ = build_train_eval_noise_file_lists()
+
+        feat_root = c.PRECOMPUTED_ROOT / "{config.train_noise.train_noise_root_name}"
+        feat_root.mkdir(parents=True, exist_ok=True)
 
         fe = LogMelExtraction(
             sample_rate=c.SAMPLE_RATE,
@@ -263,7 +248,7 @@ def precompute_train_noise_features(config: ExperimentConfig, overwrite: bool = 
             eps=c.EPS,
         )
 
-        augmenter = AdditiveNoise(
+        musan_augmenter = AdditiveNoise(
             sample_rate=c.SAMPLE_RATE,
             noise_paths=train_noise_paths,
             prob={float(config.train_noise.noise_prob)},
@@ -272,10 +257,26 @@ def precompute_train_noise_features(config: ExperimentConfig, overwrite: bool = 
             min_noise_seconds=c.MIN_NOISE_SECONDS,
         )
 
+        white_augmenter = WhiteNoise(
+            prob={float(config.train_noise.noise_prob)},
+            snr_min={float(config.train_noise.snr_min)},
+            snr_max={float(config.train_noise.snr_max)},
+        )
+
+        noise_kind = "{config.train_noise.noise_kind}"
+        if noise_kind == "musan":
+            augmenter = musan_augmenter
+        elif noise_kind in ("white", "white_mild"):
+            augmenter = white_augmenter
+        elif noise_kind == "musan+white":
+            augmenter = RandomChoiceAugment([musan_augmenter, white_augmenter])
+        else:
+            raise ValueError(f"Unsupported noise_kind: {{noise_kind}}")
+
         precompute_split(
             split_name="{config.train_noise.train_noise_root_name}",
             wav_root=Path(c.TRAIN_ROOT),
-            feat_root=c.TRAIN_NOISE_FEAT_ROOT,
+            feat_root=feat_root,
             fe=fe,
             augmenter=augmenter,
             overwrite={overwrite_flag},
@@ -298,14 +299,31 @@ def train_experiment(config: ExperimentConfig) -> subprocess.CompletedProcess:
         if train_noise_root_name is not None
         else "c.TRAIN_NOISE_FEAT_ROOT = c.PRECOMPUTED_ROOT / 'train_noise'"
     )
+
+    extra_root_assignments = []
+    if config.train_noise.feature_mode == "clean+white":
+        extra_root_assignments.append(
+            f'c.TRAIN_WHITE_FEAT_ROOT = c.PRECOMPUTED_ROOT / "{train_noise_root_name}"'
+        )
+    elif config.train_noise.feature_mode == "clean+white_mild":
+        extra_root_assignments.append(
+            f'c.TRAIN_WHITE_MILD_FEAT_ROOT = c.PRECOMPUTED_ROOT / "{train_noise_root_name}"'
+        )
+    elif config.train_noise.feature_mode == "clean+musan+white":
+        extra_root_assignments.append(
+            f'c.TRAIN_MUSAN_WHITE_FEAT_ROOT = c.PRECOMPUTED_ROOT / "{train_noise_root_name}"'
+        )
+
+    extra_root_assignments_str = "\n".join(extra_root_assignments)
     code = dedent(
         f"""
         import sys
         import constants as c
 
         {noise_root_assignment}
+        {extra_root_assignments_str}
         c.TRAIN_FEATURE_MODE = "{config.train_noise.feature_mode}"
-
+        
         import train
 
         sys.argv = ["train.py", *{args_repr}]
@@ -344,60 +362,8 @@ def verify_experiment(config: ExperimentConfig, eval_splits: List[str], checkpoi
     )
 
 
-def run_overnight_eval(args) -> None:
-    existing_run_names = args.existing_run_names
-    clean_last_configs = select_experiments(args.clean_last_experiments)
-
-    jobs = []
-    for run_name in existing_run_names:
-        for checkpoint_type in ("best", "last"):
-            jobs.append(
-                {
-                    "run_name": run_name,
-                    "checkpoint_type": checkpoint_type,
-                    "eval_splits": DEFAULT_NOISY_EVAL_SPLITS,
-                }
-            )
-
-    for config in clean_last_configs:
-        jobs.append(
-            {
-                "run_name": config.run_name,
-                "checkpoint_type": "last",
-                "eval_splits": DEFAULT_CLEAN_LAST_SPLITS,
-            }
-        )
-
-    for i, job in enumerate(jobs, start=1):
-        print("=" * 80)
-        print(
-            f"Overnight eval job {i}/{len(jobs)} | "
-            f"run_name={job['run_name']} | "
-            f"checkpoint={job['checkpoint_type']} | "
-            f"splits={', '.join(job['eval_splits'])}"
-        )
-        print("=" * 80)
-
-        verify_result = verify_run_name(
-            run_name=job["run_name"],
-            eval_splits=job["eval_splits"],
-            checkpoint_type=job["checkpoint_type"],
-        )
-        if verify_result.returncode != 0:
-            print("Verification failed. Stopping.")
-            break
-
-        if i < len(jobs) and args.cooldown_seconds > 0:
-            print(f"Cooling CPU for {args.cooldown_seconds} seconds...")
-            time.sleep(args.cooldown_seconds)
-
-
 def main() -> None:
     args = parse_args()
-
-    if args.mode == "overnight_eval":
-        run_overnight_eval(args)
-        return
 
     experiments = select_experiments(args.experiments)
 
@@ -421,7 +387,7 @@ def main() -> None:
         if not args.skip_precompute and config.train_noise.uses_noise:
             print(
                 f"Precomputing train-noise features for {config.name} | "
-                f"musan={config.train_noise.use_musan} | "
+                f"noise_kind={config.train_noise.noise_kind} | "
                 f"snr={config.train_noise.snr_min:.0f}-{config.train_noise.snr_max:.0f} dB"
             )
             precompute_result = precompute_train_noise_features(
@@ -440,10 +406,22 @@ def main() -> None:
                 break
 
         if not args.skip_verify:
-            print(f"Running verification for {config.run_name} on {', '.join(args.eval_splits)}...")
-            verify_result = verify_experiment(config, args.eval_splits, checkpoint_type="best")
-            if verify_result.returncode != 0:
-                print("Verification failed. Stopping.")
+            verify_failed = False
+            for checkpoint_type in ("best", "last"):
+                print(
+                    f"Running verification for {config.run_name} "
+                    f"[{checkpoint_type}] on {', '.join(args.eval_splits)}..."
+                )
+                verify_result = verify_experiment(
+                    config,
+                    args.eval_splits,
+                    checkpoint_type=checkpoint_type,
+                )
+                if verify_result.returncode != 0:
+                    print("Verification failed. Stopping.")
+                    verify_failed = True
+                    break
+            if verify_failed:
                 break
 
         if i < len(experiments) and args.cooldown_seconds > 0:
