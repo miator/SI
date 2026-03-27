@@ -51,7 +51,7 @@ def parse_args():
         "--train-feature-mode",
         type=str,
         default=None,
-        choices=["clean", "noise", "clean+noise"],
+        choices=["clean", "noise", "clean+noise", "clean+white", "clean+musan+white", "white", "musan+white"],
         help="Which precomputed train feature set(s) to use.",
     )
     return parser.parse_args()
