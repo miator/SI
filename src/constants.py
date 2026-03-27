@@ -67,6 +67,8 @@ TEST_FEAT_ROOT = PRECOMPUTED_ROOT / "test"
 VAL_NOISY_SNR15_FEAT_ROOT = PRECOMPUTED_ROOT / "val_noisy_snr15"
 TEST_NOISY_SNR15_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noisy_snr15"
 TEST_NOISY_SNR10_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noisy_snr10"
+TRAIN_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_white_snr10_20"
+TRAIN_MUSAN_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_musan_white_snr10_20"
 
 TRAIN_FEAT_ROOT = TRAIN_CLEAN_FEAT_ROOT
 
@@ -123,6 +125,14 @@ def get_train_feat_roots(train_feature_mode: Optional[str] = None):
         return [TRAIN_NOISE_FEAT_ROOT]
     if mode == "clean+noise":
         return [TRAIN_CLEAN_FEAT_ROOT, TRAIN_NOISE_FEAT_ROOT]
+    if mode == "clean+white":
+        return [TRAIN_CLEAN_FEAT_ROOT, TRAIN_WHITE_FEAT_ROOT]
+    if mode == "clean+musan+white":
+        return [TRAIN_CLEAN_FEAT_ROOT, TRAIN_MUSAN_WHITE_FEAT_ROOT]
+    if mode == "white":
+        return [TRAIN_WHITE_FEAT_ROOT]
+    if mode == "musan+white":
+        return [TRAIN_MUSAN_WHITE_FEAT_ROOT]
     raise ValueError(f"Unsupported TRAIN_FEATURE_MODE: {mode}")
 
 
