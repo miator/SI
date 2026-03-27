@@ -139,3 +139,44 @@ class AdditiveNoise:
 
         noise = self._sample_noise(target_length=speech.numel())
         return self._mix(speech, noise)
+
+
+class WhiteNoise:
+    def __init__(
+        self,
+        prob: float = 1.0,
+        snr_min: float = 10.0,
+        snr_max: float = 20.0,
+        eps: float = 1e-8,
+    ):
+        self.prob = prob
+        self.snr_min = snr_min
+        self.snr_max = snr_max
+        self.eps = eps
+
+    def __call__(self, speech: torch.Tensor) -> torch.Tensor:
+        speech = speech.to(torch.float32)
+        if random.random() > self.prob:
+            return speech.clamp(-1.0, 1.0)
+
+        noise = torch.randn_like(speech)
+        snr_db = random.uniform(self.snr_min, self.snr_max)
+
+        speech_rms = speech.pow(2).mean().sqrt().clamp_min(self.eps)
+        noise_rms = noise.pow(2).mean().sqrt().clamp_min(self.eps)
+        desired_noise_rms = speech_rms / (10.0 ** (snr_db / 20.0))
+        scaled_noise = noise * (desired_noise_rms / noise_rms)
+
+        mixed = speech + scaled_noise
+        return mixed.clamp_(-1.0, 1.0)
+
+
+class RandomChoiceAugment:
+    def __init__(self, augmenters):
+        self.augmenters = list(augmenters)
+        if not self.augmenters:
+            raise ValueError("augmenters must not be empty")
+
+    def __call__(self, speech: torch.Tensor) -> torch.Tensor:
+        augmenter = random.choice(self.augmenters)
+        return augmenter(speech)
