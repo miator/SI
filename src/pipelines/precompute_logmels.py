@@ -7,7 +7,7 @@ import torch
 from tqdm import tqdm
 import warnings
 
-import constants as c
+from src.config import constants as c
 from augment import AdditiveNoise, scan_noise_files, split_noise_paths
 from dataset import (
     scan_split,

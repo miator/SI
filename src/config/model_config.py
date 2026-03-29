@@ -1,0 +1,2 @@
+EMB_DIM = 192
+DROPOUT = 0.3

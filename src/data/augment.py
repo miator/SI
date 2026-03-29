@@ -6,7 +6,7 @@ from typing import List, Optional
 import torch
 import torchaudio
 
-import constants as c
+from src.config import constants as c
 
 
 def scan_noise_files(

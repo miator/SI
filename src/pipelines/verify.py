@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-import constants as c
+from src.config import constants as c
 from dataset import (
     scan_split,
     build_label_map,

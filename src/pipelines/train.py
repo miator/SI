@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-import constants as c
+from src.config import constants as c
 from dataset import (
     AudioDataset,
     PrecomputedFeatureDataset,
