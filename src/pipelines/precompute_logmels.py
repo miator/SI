@@ -1,60 +1,33 @@
-import argparse
 import random
+import warnings
 from pathlib import Path
 
-import torch
 from tqdm import tqdm
-import warnings
 
-from src.config import feature_config as f
-from src.config import data_config as d
+import torch
 from src.config import augment_config as a
-
+from src.config import data_config as d
+from src.config import feature_config as f
 from src.data.augment import AdditiveNoise, scan_noise_files, split_noise_paths
 from src.data.dataset import (
-    scan_split,
     read_audio_fast,
-    wav_path_to_feature_path,
     save_feature_tensor,
+    scan_split,
+    wav_path_to_feature_path,
 )
 from src.data.features import LogMelExtraction
 
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
 
-def _parse_args():
-    parser = argparse.ArgumentParser(
-        description="Precompute clean and/or noisy log-mel features."
-    )
-    parser.add_argument(
-        "--train-mode",
-        type=str,
-        default="clean",
-        choices=["clean", "noise", "both"],
-        help="Which train feature set(s) to precompute.",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing .pt files instead of skipping them.",
-    )
-    parser.add_argument(
-        "--include-noisy-eval",
-        action="store_true",
-        help="Also precompute the configured noisy evaluation feature splits.",
-    )
-    return parser.parse_args()
-
-
 def _precompute_split(
-    split_name: str,
-    wav_root: Path,
-    feat_root: Path,
-    fe,
-    augmenter=None,
-    overwrite: bool = False
+        split_name: str,
+        wav_root: Path,
+        feat_root: Path,
+        fe,
+        augmenter=None,
+        overwrite: bool = False
 ):
-
     utts = scan_split(wav_root)
     print(f"[{split_name}] files: {len(utts)}")
 
@@ -67,6 +40,7 @@ def _precompute_split(
         wav = read_audio_fast(u.path, f.SAMPLE_RATE)
         if augmenter is not None:
             wav = augmenter(wav)
+
         feat = fe(wav)  # (frames, n_mels)
         save_feature_tensor(out_path, feat)
 
@@ -78,6 +52,7 @@ def _build_train_eval_noise_file_lists():
         min_noise_seconds=a.MIN_NOISE_SECONDS,
     )
     train_noise_paths, eval_noise_paths = split_noise_paths(all_noise_paths)
+
     if not train_noise_paths:
         raise RuntimeError("No noise files were assigned to the training subset.")
     if not eval_noise_paths:
@@ -85,13 +60,16 @@ def _build_train_eval_noise_file_lists():
             "No noise files were assigned to the evaluation subset. "
             "Reduce NOISE_TRAIN_FILES_FRACTION or add more noise files."
         )
+
     return train_noise_paths, eval_noise_paths
 
 
 def _precompute_noisy_eval_splits(fe, overwrite: bool = False):
-    _train_noise_paths, eval_noise_paths = _build_train_eval_noise_file_lists()
+    _, eval_noise_paths = _build_train_eval_noise_file_lists()
 
-    for idx, (split_name, split_def) in enumerate(d.get_eval_split_definitions().items(), start=1):
+    for idx, (split_name, split_def) in enumerate(
+        d.get_eval_split_definitions().items(), start=1
+    ):
         if not split_def["is_noisy"]:
             continue
 
@@ -103,7 +81,6 @@ def _precompute_noisy_eval_splits(fe, overwrite: bool = False):
             snr_max=split_def["snr"],
             min_noise_seconds=a.MIN_NOISE_SECONDS,
         )
-        split_def["feat_root"].mkdir(parents=True, exist_ok=True)
         _precompute_split(
             split_name=split_name,
             wav_root=split_def["wav_root"],
@@ -118,7 +95,10 @@ def main():
     SEED = 37
     random.seed(SEED)
     torch.manual_seed(SEED)
-    args = _parse_args()
+
+    train_mode = "clean"          # "clean", "noise", "both"
+    overwrite = False             # False = skip existing, True = recompute
+    include_noisy_eval = False    # True = also precompute noisy eval splits
 
     fe = LogMelExtraction(
         sample_rate=f.SAMPLE_RATE,
@@ -138,21 +118,21 @@ def main():
         d.TEST_FEAT_ROOT,
         d.VAL_NOISY_SNR15_FEAT_ROOT,
         d.TEST_NOISY_SNR15_FEAT_ROOT,
-        d.TEST_NOISY_SNR10_FEAT_ROOT
+        d.TEST_NOISY_SNR10_FEAT_ROOT,
     ]
     for path in directories:
         path.mkdir(parents=True, exist_ok=True)
 
-    if args.train_mode in {"clean", "both"}:
+    if train_mode in {"clean", "both"}:
         _precompute_split(
-            "train_clean",
-            Path(d.TRAIN_ROOT),
-            d.TRAIN_CLEAN_FEAT_ROOT,
-            fe,
-            overwrite=args.overwrite
+            split_name="train_clean",
+            wav_root=Path(d.TRAIN_ROOT),
+            feat_root=d.TRAIN_CLEAN_FEAT_ROOT,
+            fe=fe,
+            overwrite=overwrite,
         )
 
-    if args.train_mode in {"noise", "both"}:
+    if train_mode in {"noise", "both"}:
         augmenter = AdditiveNoise(
             sample_rate=f.SAMPLE_RATE,
             noise_root=d.MUSAN_NOISE_ROOT,
@@ -162,19 +142,31 @@ def main():
             min_noise_seconds=a.MIN_NOISE_SECONDS,
         )
         _precompute_split(
-            "train_noise",
-            Path(d.TRAIN_ROOT),
-            d.TRAIN_NOISE_FEAT_ROOT,
-            fe,
+            split_name="train_noise",
+            wav_root=Path(d.TRAIN_ROOT),
+            feat_root=d.TRAIN_NOISE_FEAT_ROOT,
+            fe=fe,
             augmenter=augmenter,
-            overwrite=args.overwrite
+            overwrite=overwrite,
         )
 
-    _precompute_split("val", Path(d.VAL_ROOT), d.VAL_FEAT_ROOT, fe, overwrite=args.overwrite)
-    _precompute_split("test", Path(d.TEST_ROOT), d.TEST_FEAT_ROOT, fe, overwrite=args.overwrite)
+    _precompute_split(
+        split_name="val",
+        wav_root=Path(d.VAL_ROOT),
+        feat_root=d.VAL_FEAT_ROOT,
+        fe=fe,
+        overwrite=overwrite,
+    )
+    _precompute_split(
+        split_name="test",
+        wav_root=Path(d.TEST_ROOT),
+        feat_root=d.TEST_FEAT_ROOT,
+        fe=fe,
+        overwrite=overwrite,
+    )
 
-    if args.include_noisy_eval:
-        _precompute_noisy_eval_splits(fe, overwrite=args.overwrite)
+    if include_noisy_eval:
+        _precompute_noisy_eval_splits(fe, overwrite=overwrite)
 
     print("Done.")
 
