@@ -4,11 +4,10 @@ import torch.nn.functional as F
 
 
 class CNN1DNET(nn.Module):
-    """Input: x (B, T, F), where F is the feature dimension.
+    """Input: x (B, T, F), where B = batch size, T = time steps(frames), F = feature dimension.
     Treat feature bins as channels by transposing to (B, F, T) for Conv1d.
-    Embeddings are the main output for unseen-speaker verification.
-    The classifier head is used only for train-speaker supervision."""
-    def __init__(self, n_feats: int, num_classes: int, emb_dim: int = 192, dropout: float = 0.3):
+    Embeddings are the main output for unseen-speaker verification."""
+    def __init__(self, n_feats: int, emb_dim: int = 192, dropout: float = 0.3):
         super().__init__()
         self.emb_dim = emb_dim
         self.features = nn.Sequential(
@@ -27,15 +26,13 @@ class CNN1DNET(nn.Module):
             nn.BatchNorm1d(256),
         )
 
-        self.pool = nn.AdaptiveAvgPool1d(1)  # global average over time
+        self.pool = nn.AdaptiveAvgPool1d(1)
         self.emb = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(256, emb_dim)
         )
-        # classifier head used only for train-speaker supervision
-        self.classifier = nn.Linear(emb_dim, num_classes)
 
-    def forward(self, x: torch.Tensor, return_embedding: bool = False) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_embedding: bool = True) -> torch.Tensor:
         x = x.transpose(1, 2)   # (B, F, T)
         x = self.features(x)               # (B, C, T') C=256
         x = self.pool(x).squeeze(-1)       # (B, C) C=256
@@ -45,6 +42,3 @@ class CNN1DNET(nn.Module):
 
         if return_embedding:
             return e
-
-        logits = self.classifier(e)        # (B, num_classes)
-        return logits
