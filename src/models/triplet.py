@@ -1,5 +1,3 @@
-# triplet.py
-from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,14 +5,11 @@ import torch.nn.functional as F
 
 class BatchHardTripletLoss(nn.Module):
     """
-    Batch-hard triplet loss (anchor is each sample in batch).
-    Requires >=2 samples per class in the batch to create positives.
-
-    embeddings: (B, D)
-    labels: (B,)
-    Uses cosine distance: d = 1 - cos
+    embeddings: (B, D), labels: (B,),
+        B = batch size (number of samples in the batch),
+        D = emb_dimension (number of features in each embedding vector)
     """
-    def __init__(self, margin: float = 0.2, normalize: bool = True, eps: float = 1e-12):
+    def __init__(self, margin: float = 0.22, normalize: bool = True, eps: float = 1e-12):
         super().__init__()
         self.margin = margin
         self.normalize = normalize
@@ -37,23 +32,23 @@ class BatchHardTripletLoss(nn.Module):
             x = F.normalize(x, p=2, dim=1, eps=self.eps)
 
         sim = x @ x.t()
-        dist = 1.0 - sim  # (B, B)
+        dist = 1.0 - sim
 
-        labels = labels.to(device=embeddings.device)
+        labels = labels.to(device=embeddings.device)  # move labels to embeddings device
         same = labels.unsqueeze(0) == labels.unsqueeze(1)
         eye = torch.eye(B, device=embeddings.device, dtype=torch.bool)
         pos_mask = same & ~eye
         neg_mask = ~same
 
-        pos_dist = dist.masked_fill(~pos_mask, float("-inf"))
-        neg_dist = dist.masked_fill(~neg_mask, float("inf"))
+        pos_dist = dist.masked_fill(~pos_mask, -torch.inf)
+        neg_dist = dist.masked_fill(~neg_mask, torch.inf)
 
-        hardest_pos, _ = pos_dist.max(dim=1)
-        hardest_neg, _ = neg_dist.min(dim=1)
+        hardest_pos_dist, _ = pos_dist.max(dim=1)
+        hardest_neg_dist, _ = neg_dist.min(dim=1)
 
         valid = pos_mask.any(dim=1) & neg_mask.any(dim=1)
         if not valid.any():
             return embeddings.sum() * 0.0
 
-        loss = F.relu(hardest_pos[valid] - hardest_neg[valid] + self.margin)
+        loss = F.relu(hardest_pos_dist[valid] - hardest_neg_dist[valid] + self.margin)
         return loss.mean()
