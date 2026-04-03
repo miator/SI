@@ -1,23 +1,18 @@
 import random
 from collections import defaultdict
-from typing import Iterator, List
-
+from typing import Iterator
 from torch.utils.data import Sampler
 
 
 class PKSampler(Sampler[int]):
-    """
-    Samples batches with P speakers and K utterances per speaker (batch size = P*K).
-    Expects dataset items to have speaker labels accessible as dataset.labels (list[int]).
-    """
+    """Samples batches with P speakers and K utterances per speaker (batch size = P*K)."""
 
-    def __init__(self, labels: List[int], P: int, K: int, seed: int = 37, drop_last: bool = True):
+    def __init__(self, labels: list[int], P: int, K: int, seed: int = 37):
         super().__init__()
         self.labels = list(map(int, labels))
         self.P = int(P)
         self.K = int(K)
         self.seed = int(seed)
-        self.drop_last = drop_last
 
         self.by_spk = defaultdict(list)
         for idx, y in enumerate(self.labels):
@@ -30,39 +25,36 @@ class PKSampler(Sampler[int]):
 
     def __iter__(self) -> Iterator[int]:
         rng = random.Random(self.seed)
-        # shuffle indices per speaker
-        pools = {spk: self.by_spk[spk][:] for spk in self.speakers}
+        pools = {spk: self.by_spk[spk][:] for spk in self.speakers}  # shallow copy
         for spk in self.speakers:
             rng.shuffle(pools[spk])
 
-        # cursor per speaker
-        curs = {spk: 0 for spk in self.speakers}
+        next_idx_per_spk = {spk: 0 for spk in self.speakers}
 
-        batch = []
+        buffer = []
         while True:
-            rng.shuffle(self.speakers)
-            chosen = self.speakers[: self.P]
+            speaker_order = self.speakers[:]
+            rng.shuffle(speaker_order)
+            chosen = speaker_order[: self.P]
 
             made_any = False
             for spk in chosen:
-                c = curs[spk]
+                c = next_idx_per_spk[spk]
                 if c + self.K <= len(pools[spk]):
-                    batch.extend(pools[spk][c: c + self.K])
-                    curs[spk] += self.K
+                    buffer.extend(pools[spk][c: c + self.K])
+                    next_idx_per_spk[spk] += self.K
                     made_any = True
 
             if not made_any:
                 break
 
-            if len(batch) >= self.P * self.K:
-                out = batch[: self.P * self.K]
-                batch = batch[self.P * self.K:]
+            if len(buffer) >= self.P * self.K:
+                out = buffer[: self.P * self.K]
+                buffer = buffer[self.P * self.K:]
                 yield from out
 
-        # optionally drop_last=True means ignore leftovers
-
     def __len__(self) -> int:
-        # rough lower bound; DataLoader doesn't strictly need exact
+        # approximate number of yielded indices (used by DataLoader for length/progress)
         per_spk = [len(v) // self.K for v in self.by_spk.values()]
         steps = sum(per_spk) // self.P
         return steps * self.P * self.K
