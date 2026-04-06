@@ -1,6 +1,6 @@
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 EXP_NAME = ""
 
@@ -11,5 +11,5 @@ TB_DIR = EXP_DIR / "tensorboard"
 CKPT_DIR = EXP_DIR / "checkpoints"
 RESULTS_DIR = EXP_DIR / "results"
 
-BEST_MODEL_PATH = CKPT_DIR / "best_val_loss.pt"
-LAST_MODEL_PATH = CKPT_DIR / "last_epoch.pt"
+BEST_MODEL_PATH = CKPT_DIR / "best.pt"
+LAST_MODEL_PATH = CKPT_DIR / "last.pt"

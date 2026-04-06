@@ -1,8 +1,6 @@
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent
 TRAIN_ROOT = r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\wav\train"
 VAL_ROOT = r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\wav\val"
 TEST_ROOT = r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\wav\test"
@@ -28,12 +26,11 @@ TEST_NOISY_SNR10_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noisy_snr10"
 TRAIN_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_white_snr10_20"
 TRAIN_MUSAN_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_musan_white_snr10_20"
 
-TRAIN_FEAT_ROOT = TRAIN_CLEAN_FEAT_ROOT
 USE_PRECOMPUTED_FEATURES = True
 TRAIN_FEATURE_MODE = "clean+noise"
 
 
-def get_eval_split_definitions():
+def get_eval_split_definitions() -> dict[str, dict[str, Union[Path, float, bool, None]]]:
     return {
         "val": {
             "wav_root": Path(VAL_ROOT),
