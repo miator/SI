@@ -78,7 +78,7 @@ def main():
     epochs = t.EPOCHS
     lr = t.LEARNING_RATE
     weight_decay = t.WEIGHT_DECAY
-    train_feature_mode = t.TRAIN_FEATURE_MODE
+    train_feature_mode = d.TRAIN_FEATURE_MODE
 
     run_name = e.EXP_NAME
     run_root = Path(e.RUNS_DIR) / run_name
