@@ -6,126 +6,58 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from textwrap import dedent
-from typing import List, Optional
+from typing import Optional
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-COOL_DOWN_SECONDS = 90
-
-DEFAULT_FULL_EXPERIMENTS = [
-    "musan_snr20_p050",
-    "musan_snr20_p035",
-]
-
-DEFAULT_EVAL_SPLITS = [
-    "val",
-    "val_noisy_snr15",
-    "test",
-    "test_noisy_snr15",
-    "test_noisy_snr10",
-]
-
-BASE_TRAIN_ARGS = [
-    "--margin", "0.22",
-    "--p", "12",
-    "--k", "5",
-    "--emb-dim", "192",
-    "--lr", "5e-4",
-    "--wd", "1e-4",
-    "--lr-scheduler", "none",
-]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+COOLDOWN_SECONDS = 30
 
 
 @dataclass(frozen=True)
-class TrainNoiseConfig:
-    label: str
-    noise_kind: str  # "clean", "musan", "white", "musan+white"
-    snr_min: Optional[float] = None
-    snr_max: Optional[float] = None
-    noise_prob: float = 1.0
-
-    @property
-    def uses_noise(self) -> bool:
-        return self.noise_kind != "clean"
-
-    @property
-    def feature_mode(self) -> str:
-        mapping = {
-            "clean": "clean",
-            "musan": "clean+noise",
-            "white": "clean+white",
-            "white_mild": "clean+white_mild",
-            "musan+white": "clean+musan+white",
-        }
-        return mapping[self.noise_kind]
-
-    @property
-    def train_noise_root_name(self) -> Optional[str]:
-        mapping = {
-            "clean": None,
-            "musan": self.label,
-            "white": self.label,
-            "white_mild": self.label,
-            "musan+white": self.label,
-        }
-        return mapping[self.noise_kind]
-
-
-@dataclass(frozen=True)
-class ExperimentConfig:
+class ExperimentSpec:
     name: str
     run_name: str
-    train_noise: TrainNoiseConfig
+    train_feature_mode: str = "clean"
+    train_noise_feat_subdir: Optional[str] = None
+    emb_dim: int = 192
+    margin: float = 0.22
+    p: int = 12
+    k: int = 5
+    lr: float = 5e-4
+    weight_decay: float = 1e-4
+    epochs: int = 30
+    dropout: float = 0.3
+    verify_splits: tuple[str, ...] = ("val", "test")
+    verify_checkpoint_types: tuple[str, ...] = ("best",)
+    global_summary_name: str = "verify_summary_new.csv"
+    save_verify_artifacts: bool = False
+    noise_prob: float = 1.0
+    snr_min: float = 20.0
+    snr_max: float = 20.0
 
 
-EXPERIMENTS = {
-    "musan_snr20_p050": ExperimentConfig(
-        name="musan_snr20_p050",
-        run_name="cnn1d_emb192_m022_P12K5_clean+musan_snr20_p050",
-        train_noise=TrainNoiseConfig(
-            label="train_noise_musan_snr20_p050",
-            noise_kind="musan",
-            snr_min=20.0,
-            snr_max=20.0,
-            noise_prob=0.5,
-        ),
-    ),
-    "musan_snr20_p035": ExperimentConfig(
-        name="musan_snr20_p035",
-        run_name="cnn1d_emb192_m022_P12K5_clean+musan_snr20_p035",
-        train_noise=TrainNoiseConfig(
-            label="train_noise_musan_snr20_p035",
-            noise_kind="musan",
-            snr_min=20.0,
-            snr_max=20.0,
-            noise_prob=0.35,
-        ),
+EXPERIMENTS: dict[str, ExperimentSpec] = {
+    "baseline": ExperimentSpec(
+        name="baseline",
+        run_name="baseline",
+        train_feature_mode="clean",
+        verify_splits=("val", "test"),
+        verify_checkpoint_types=("best",),
+        global_summary_name="verify_summary.csv"
     ),
 }
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Precompute features, train, and verify the configured speaker-verification experiments."
+        description="Run multiple train/verify experiments without changing other modules."
     )
     parser.add_argument(
         "--experiments",
         nargs="+",
-        choices=list(EXPERIMENTS.keys()) + ["all"],
-        default=DEFAULT_FULL_EXPERIMENTS,
-        help="Which named experiments to run. Defaults to all.",
-    )
-    parser.add_argument(
-        "--eval-splits",
-        nargs="+",
-        default=DEFAULT_EVAL_SPLITS,
-        help="Evaluation splits to verify for each experiment.",
-    )
-    parser.add_argument(
-        "--overwrite-features",
-        action="store_true",
-        help="Recompute existing feature caches instead of reusing them.",
+        choices=[*EXPERIMENTS.keys(), "all"],
+        default=["baseline"],
+        help="Which experiments to run.",
     )
     parser.add_argument(
         "--skip-precompute",
@@ -135,7 +67,7 @@ def parse_args():
     parser.add_argument(
         "--skip-train",
         action="store_true",
-        help="Skip training and only run remaining stages.",
+        help="Skip training.",
     )
     parser.add_argument(
         "--skip-verify",
@@ -143,289 +75,292 @@ def parse_args():
         help="Skip verification.",
     )
     parser.add_argument(
+        "--overwrite-features",
+        action="store_true",
+        help="Recompute feature caches even if they already exist.",
+    )
+    parser.add_argument(
         "--cooldown-seconds",
         type=int,
-        default=COOL_DOWN_SECONDS,
-        help="Cooldown between experiments.",
+        default=COOLDOWN_SECONDS,
+        help="Pause between experiments.",
     )
     return parser.parse_args()
 
 
-def select_experiments(selected_names: List[str]) -> List[ExperimentConfig]:
-    if "all" in selected_names:
+def select_experiments(names: list[str]) -> list[ExperimentSpec]:
+    if "all" in names:
         return list(EXPERIMENTS.values())
-    return [EXPERIMENTS[name] for name in selected_names]
+    return [EXPERIMENTS[name] for name in names]
 
 
-def run_python_snippet(code: str) -> subprocess.CompletedProcess:
+def run_python_code(code: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-c", code],
-        cwd=str(SCRIPT_DIR),
+        cwd=str(PROJECT_ROOT),
         check=False,
     )
 
 
-def precompute_shared_features(overwrite: bool = False) -> subprocess.CompletedProcess:
-    overwrite_flag = "True" if overwrite else "False"
-    code = dedent(
-        f"""
-        from pathlib import Path
-        import constants as c
-        from features import LogMelExtraction
-        from precompute_logmels import precompute_split, precompute_noisy_eval_splits
+def precompute_shared_features(overwrite: bool) -> subprocess.CompletedProcess:
+    code = f"""
+from pathlib import Path
 
-        fe = LogMelExtraction(
-            sample_rate=c.SAMPLE_RATE,
-            n_fft=c.N_FFT,
-            win_length=c.WIN_LENGTH,
-            hop_length=c.HOP_LENGTH,
-            n_mels=c.N_MELS,
-            f_min=c.FMIN,
-            f_max=c.FMAX,
-            eps=c.EPS,
-        )
+from src.config import data_config as d
+from src.config import feature_config as f
+from src.data.features import LogMelExtraction
+from src.pipelines import precompute_logmels as p
 
-        c.TRAIN_CLEAN_FEAT_ROOT.mkdir(parents=True, exist_ok=True)
-        c.VAL_FEAT_ROOT.mkdir(parents=True, exist_ok=True)
-        c.TEST_FEAT_ROOT.mkdir(parents=True, exist_ok=True)
+fe = LogMelExtraction(
+    sample_rate=f.SAMPLE_RATE,
+    n_fft=f.N_FFT,
+    win_length=f.WIN_LENGTH,
+    hop_length=f.HOP_LENGTH,
+    n_mels=f.N_MELS,
+    f_min=f.FMIN,
+    f_max=f.FMAX,
+    eps=f.EPS,
+)
 
-        precompute_split(
-            split_name="train_clean",
-            wav_root=Path(c.TRAIN_ROOT),
-            feat_root=c.TRAIN_CLEAN_FEAT_ROOT,
-            fe=fe,
-            overwrite={overwrite_flag},
-            seed=101,
-        )
-        precompute_split(
-            split_name="val",
-            wav_root=Path(c.VAL_ROOT),
-            feat_root=c.VAL_FEAT_ROOT,
-            fe=fe,
-            overwrite={overwrite_flag},
-            seed=102,
-        )
-        precompute_split(
-            split_name="test",
-            wav_root=Path(c.TEST_ROOT),
-            feat_root=c.TEST_FEAT_ROOT,
-            fe=fe,
-            overwrite={overwrite_flag},
-            seed=103,
-        )
-        precompute_noisy_eval_splits(fe=fe, overwrite={overwrite_flag})
-        """
-    )
-    return run_python_snippet(code)
+for path in (
+    d.TRAIN_CLEAN_FEAT_ROOT,
+    d.VAL_FEAT_ROOT,
+    d.TEST_FEAT_ROOT,
+):
+    path.mkdir(parents=True, exist_ok=True)
+
+p._precompute_split(
+    split_name="train_clean",
+    wav_root=Path(d.TRAIN_ROOT),
+    feat_root=d.TRAIN_CLEAN_FEAT_ROOT,
+    fe=fe,
+    overwrite={overwrite!r},
+)
+p._precompute_split(
+    split_name="val",
+    wav_root=Path(d.VAL_ROOT),
+    feat_root=d.VAL_FEAT_ROOT,
+    fe=fe,
+    overwrite={overwrite!r},
+)
+p._precompute_split(
+    split_name="test",
+    wav_root=Path(d.TEST_ROOT),
+    feat_root=d.TEST_FEAT_ROOT,
+    fe=fe,
+    overwrite={overwrite!r},
+)
+"""
+    return run_python_code(code)
 
 
-def precompute_train_noise_features(config: ExperimentConfig, overwrite: bool = False) -> subprocess.CompletedProcess:
-    if not config.train_noise.uses_noise:
+def precompute_train_noise_features(spec: ExperimentSpec, overwrite: bool) -> subprocess.CompletedProcess:
+    if spec.train_noise_feat_subdir is None:
         return subprocess.CompletedProcess(args=[], returncode=0)
 
-    overwrite_flag = "True" if overwrite else "False"
-    code = dedent(
-        f"""
-        from pathlib import Path
-        import constants as c
-        from augment import AdditiveNoise, WhiteNoise, RandomChoiceAugment
-        from features import LogMelExtraction
-        from precompute_logmels import build_train_eval_noise_file_lists, precompute_split
+    code = f"""
+from pathlib import Path
 
-        train_noise_paths, _ = build_train_eval_noise_file_lists()
+from src.config import augment_config as a
+from src.config import data_config as d
+from src.config import feature_config as f
+from src.data.augment import AdditiveNoise, scan_noise_files, split_noise_paths
+from src.data.features import LogMelExtraction
+from src.pipelines import precompute_logmels as p
 
-        feat_root = c.PRECOMPUTED_ROOT / "{config.train_noise.train_noise_root_name}"
-        feat_root.mkdir(parents=True, exist_ok=True)
+feat_root = d.PRECOMPUTED_ROOT / {spec.train_noise_feat_subdir!r}
+feat_root.mkdir(parents=True, exist_ok=True)
 
-        fe = LogMelExtraction(
-            sample_rate=c.SAMPLE_RATE,
-            n_fft=c.N_FFT,
-            win_length=c.WIN_LENGTH,
-            hop_length=c.HOP_LENGTH,
-            n_mels=c.N_MELS,
-            f_min=c.FMIN,
-            f_max=c.FMAX,
-            eps=c.EPS,
+all_noise_paths = scan_noise_files(
+    d.MUSAN_NOISE_ROOT,
+    sample_rate=f.SAMPLE_RATE,
+    min_noise_seconds=a.MIN_NOISE_SECONDS,
+)
+train_noise_paths, _ = split_noise_paths(all_noise_paths)
+
+if not train_noise_paths:
+    raise RuntimeError("No train noise files were found.")
+
+augmenter = AdditiveNoise(
+    sample_rate=f.SAMPLE_RATE,
+    noise_paths=train_noise_paths,
+    prob={spec.noise_prob!r},
+    snr_min={spec.snr_min!r},
+    snr_max={spec.snr_max!r},
+    min_noise_seconds=a.MIN_NOISE_SECONDS,
+)
+
+fe = LogMelExtraction(
+    sample_rate=f.SAMPLE_RATE,
+    n_fft=f.N_FFT,
+    win_length=f.WIN_LENGTH,
+    hop_length=f.HOP_LENGTH,
+    n_mels=f.N_MELS,
+    f_min=f.FMIN,
+    f_max=f.FMAX,
+    eps=f.EPS,
+)
+
+p._precompute_split(
+    split_name={spec.train_noise_feat_subdir!r},
+    wav_root=Path(d.TRAIN_ROOT),
+    feat_root=feat_root,
+    fe=fe,
+    augmenter=augmenter,
+    overwrite={overwrite!r},
+)
+"""
+    return run_python_code(code)
+
+
+def train_experiment(spec: ExperimentSpec) -> subprocess.CompletedProcess:
+    code = f"""
+from src.config import data_config as d
+from src.config import experiment_config as e
+from src.config import model_config as m
+from src.config import train_config as t
+
+e.EXP_NAME = {spec.run_name!r}
+e.EXP_DIR = e.RUNS_DIR / e.EXP_NAME
+e.TB_DIR = e.EXP_DIR / "tensorboard"
+e.CKPT_DIR = e.EXP_DIR / "checkpoints"
+e.RESULTS_DIR = e.EXP_DIR / "results"
+e.BEST_MODEL_PATH = e.CKPT_DIR / "best.pt"
+e.LAST_MODEL_PATH = e.CKPT_DIR / "last.pt"
+
+d.TRAIN_FEATURE_MODE = {spec.train_feature_mode!r}
+t.MARGIN = {spec.margin!r}
+t.P = {spec.p!r}
+t.K = {spec.k!r}
+t.EPOCHS = {spec.epochs!r}
+t.LEARNING_RATE = {spec.lr!r}
+t.WEIGHT_DECAY = {spec.weight_decay!r}
+
+m.EMB_DIM = {spec.emb_dim!r}
+m.DROPOUT = {spec.dropout!r}
+
+if {spec.train_noise_feat_subdir!r} is not None:
+    d.TRAIN_NOISE_FEAT_ROOT = d.PRECOMPUTED_ROOT / {spec.train_noise_feat_subdir!r}
+
+import src.pipelines.train as train_mod
+train_mod.main()
+"""
+    return run_python_code(code)
+
+
+def verify_experiment(spec: ExperimentSpec) -> subprocess.CompletedProcess:
+    code = f"""
+from pathlib import Path
+
+import torch
+
+from src.config import data_config as d
+from src.config import experiment_config as e
+from src.config import feature_config as f
+from src.config import model_config as m
+from src.models.model import CNN1DNET
+from src.pipelines import verify as verify_mod
+
+e.EXP_NAME = {spec.run_name!r}
+e.EXP_DIR = e.RUNS_DIR / e.EXP_NAME
+e.TB_DIR = e.EXP_DIR / "tensorboard"
+e.CKPT_DIR = e.EXP_DIR / "checkpoints"
+e.RESULTS_DIR = e.EXP_DIR / "results"
+e.BEST_MODEL_PATH = e.CKPT_DIR / "best.pt"
+e.LAST_MODEL_PATH = e.CKPT_DIR / "last.pt"
+
+m.EMB_DIM = {spec.emb_dim!r}
+m.DROPOUT = {spec.dropout!r}
+
+run_root = Path(e.RUNS_DIR) / e.EXP_NAME
+verify_dir = run_root / "results" / "verify"
+per_run_csv = verify_dir / "metrics_summary.csv"
+global_csv = Path(e.RUNS_DIR) / {spec.global_summary_name!r}
+selected_splits = set({list(spec.verify_splits)!r})
+checkpoint_types = {list(spec.verify_checkpoint_types)!r}
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+rows = []
+
+for checkpoint_type in checkpoint_types:
+    ckpt_path = verify_mod.resolve_checkpoint_path(run_root, checkpoint_type)
+    ckpt = torch.load(ckpt_path, map_location=device)
+
+    model = CNN1DNET(
+        n_feats=f.N_MELS,
+        emb_dim=m.EMB_DIM,
+        dropout=m.DROPOUT,
+    ).to(device)
+    model.load_state_dict(ckpt["model_state_dict"])
+
+    eval_definitions = d.get_eval_split_definitions()
+    for split_name, split_def in eval_definitions.items():
+        if split_name not in selected_splits:
+            continue
+
+        row = verify_mod.evaluate_split(
+            model=model,
+            split_name=split_name,
+            checkpoint_type=checkpoint_type,
+            split_root=Path(split_def["wav_root"]),
+            feat_root=Path(split_def["feat_root"]),
+            device=device,
+            output_dir=verify_dir,
+            experiment_name=run_root.name,
+            save_artifacts={spec.save_verify_artifacts!r},
         )
+        rows.append(row)
 
-        musan_augmenter = AdditiveNoise(
-            sample_rate=c.SAMPLE_RATE,
-            noise_paths=train_noise_paths,
-            prob={float(config.train_noise.noise_prob)},
-            snr_min={float(config.train_noise.snr_min)},
-            snr_max={float(config.train_noise.snr_max)},
-            min_noise_seconds=c.MIN_NOISE_SECONDS,
-        )
+verify_mod.upsert_metrics_rows(per_run_csv, rows)
+verify_mod.upsert_metrics_rows(global_csv, rows)
 
-        white_augmenter = WhiteNoise(
-            prob={float(config.train_noise.noise_prob)},
-            snr_min={float(config.train_noise.snr_min)},
-            snr_max={float(config.train_noise.snr_max)},
-        )
-
-        noise_kind = "{config.train_noise.noise_kind}"
-        if noise_kind == "musan":
-            augmenter = musan_augmenter
-        elif noise_kind in ("white", "white_mild"):
-            augmenter = white_augmenter
-        elif noise_kind == "musan+white":
-            augmenter = RandomChoiceAugment([musan_augmenter, white_augmenter])
-        else:
-            raise ValueError(f"Unsupported noise_kind: {{noise_kind}}")
-
-        precompute_split(
-            split_name="{config.train_noise.train_noise_root_name}",
-            wav_root=Path(c.TRAIN_ROOT),
-            feat_root=feat_root,
-            fe=fe,
-            augmenter=augmenter,
-            overwrite={overwrite_flag},
-            seed=201,
-        )
-        """
-    )
-    return run_python_snippet(code)
-
-
-def train_experiment(config: ExperimentConfig) -> subprocess.CompletedProcess:
-    extra_args = [
-        "--run-name", config.run_name,
-        "--train-feature-mode", config.train_noise.feature_mode,
-    ]
-    args_repr = repr(BASE_TRAIN_ARGS + extra_args)
-    train_noise_root_name = config.train_noise.train_noise_root_name
-    noise_root_assignment = (
-        f'c.TRAIN_NOISE_FEAT_ROOT = c.PRECOMPUTED_ROOT / "{train_noise_root_name}"'
-        if train_noise_root_name is not None
-        else "c.TRAIN_NOISE_FEAT_ROOT = c.PRECOMPUTED_ROOT / 'train_noise'"
-    )
-
-    extra_root_assignments = []
-    if config.train_noise.feature_mode == "clean+white":
-        extra_root_assignments.append(
-            f'c.TRAIN_WHITE_FEAT_ROOT = c.PRECOMPUTED_ROOT / "{train_noise_root_name}"'
-        )
-    elif config.train_noise.feature_mode == "clean+white_mild":
-        extra_root_assignments.append(
-            f'c.TRAIN_WHITE_MILD_FEAT_ROOT = c.PRECOMPUTED_ROOT / "{train_noise_root_name}"'
-        )
-    elif config.train_noise.feature_mode == "clean+musan+white":
-        extra_root_assignments.append(
-            f'c.TRAIN_MUSAN_WHITE_FEAT_ROOT = c.PRECOMPUTED_ROOT / "{train_noise_root_name}"'
-        )
-
-    extra_root_assignments_str = "\n".join(extra_root_assignments)
-    code = dedent(
-        f"""
-        import sys
-        import constants as c
-
-        {noise_root_assignment}
-        {extra_root_assignments_str}
-        c.TRAIN_FEATURE_MODE = "{config.train_noise.feature_mode}"
-        
-        import train
-
-        sys.argv = ["train.py", *{args_repr}]
-        train.main()
-        """
-    )
-    return run_python_snippet(code)
-
-
-def verify_run_name(
-    run_name: str,
-    eval_splits: List[str],
-    checkpoint_type: str,
-) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            sys.executable,
-            "verify.py",
-            "--experiment",
-            run_name,
-            "--checkpoint-type",
-            checkpoint_type,
-            "--eval-splits",
-            *eval_splits,
-        ],
-        cwd=str(SCRIPT_DIR),
-        check=False,
-    )
-
-
-def verify_experiment(config: ExperimentConfig, eval_splits: List[str], checkpoint_type: str = "best") -> subprocess.CompletedProcess:
-    return verify_run_name(
-        run_name=config.run_name,
-        eval_splits=eval_splits,
-        checkpoint_type=checkpoint_type,
-    )
+print(f"Per-run summary saved to: {{per_run_csv}}")
+print(f"Global summary updated at: {{global_csv}}")
+"""
+    return run_python_code(code)
 
 
 def main() -> None:
     args = parse_args()
-
     experiments = select_experiments(args.experiments)
 
     if not args.skip_precompute:
         print("=" * 80)
-        print("Precomputing shared clean/noisy evaluation features...")
+        print("Precomputing shared clean features...")
         print("=" * 80)
-        shared_precompute_result = precompute_shared_features(overwrite=args.overwrite_features)
-        if shared_precompute_result.returncode != 0:
+        result = precompute_shared_features(overwrite=args.overwrite_features)
+        if result.returncode != 0:
             print("Shared feature precomputation failed. Stopping.")
             return
 
-    for i, config in enumerate(experiments, start=1):
+    for idx, spec in enumerate(experiments, start=1):
         print("=" * 80)
-        print(
-            f"Starting experiment {i}/{len(experiments)} | "
-            f"name={config.name} | run_name={config.run_name}"
-        )
+        print(f"Experiment {idx}/{len(experiments)}: {spec.name} -> {spec.run_name}")
         print("=" * 80)
 
-        if not args.skip_precompute and config.train_noise.uses_noise:
-            print(
-                f"Precomputing train-noise features for {config.name} | "
-                f"noise_kind={config.train_noise.noise_kind} | "
-                f"snr={config.train_noise.snr_min:.0f}-{config.train_noise.snr_max:.0f} dB"
-            )
-            precompute_result = precompute_train_noise_features(
-                config,
-                overwrite=args.overwrite_features,
-            )
-            if precompute_result.returncode != 0:
-                print("Train-noise feature precomputation failed. Stopping.")
-                break
+        if not args.skip_precompute and spec.train_noise_feat_subdir is not None:
+            print(f"Precomputing train noise features for {spec.run_name}...")
+            result = precompute_train_noise_features(spec, overwrite=args.overwrite_features)
+            if result.returncode != 0:
+                print("Noise feature precomputation failed. Stopping.")
+                return
 
         if not args.skip_train:
-            print(f"Launching training for {config.run_name}...")
-            train_result = train_experiment(config)
-            if train_result.returncode != 0:
+            print(f"Training {spec.run_name}...")
+            result = train_experiment(spec)
+            if result.returncode != 0:
                 print("Training failed. Stopping.")
-                break
+                return
 
         if not args.skip_verify:
-            verify_failed = False
-            for checkpoint_type in ("best", "last"):
-                print(
-                    f"Running verification for {config.run_name} "
-                    f"[{checkpoint_type}] on {', '.join(args.eval_splits)}..."
-                )
-                verify_result = verify_experiment(
-                    config,
-                    args.eval_splits,
-                    checkpoint_type=checkpoint_type,
-                )
-                if verify_result.returncode != 0:
-                    print("Verification failed. Stopping.")
-                    verify_failed = True
-                    break
-            if verify_failed:
-                break
+            print(f"Verifying {spec.run_name} on {', '.join(spec.verify_splits)}...")
+            result = verify_experiment(spec)
+            if result.returncode != 0:
+                print("Verification failed. Stopping.")
+                return
 
-        if i < len(experiments) and args.cooldown_seconds > 0:
-            print(f"Cooling CPU for {args.cooldown_seconds} seconds...")
+        if idx < len(experiments) and args.cooldown_seconds > 0:
+            print(f"Cooling down for {args.cooldown_seconds} seconds...")
             time.sleep(args.cooldown_seconds)
 
 
