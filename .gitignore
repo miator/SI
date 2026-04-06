@@ -14,8 +14,4 @@ __pycache__/
 .DS_Store
 
 .runs/
-src/runs
-.results/
 *.tfevents
-
-test_dataloader.py
