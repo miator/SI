@@ -5,8 +5,7 @@ import torch.nn.functional as F
 
 class CNN1DNET(nn.Module):
     """Input: x (B, T, F), where B = batch size, T = time steps(frames), F = feature dimension.
-    Treat feature bins as channels by transposing to (B, F, T) for Conv1d.
-    Embeddings are the main output for unseen-speaker verification."""
+    Treat feature bins as channels by transposing to (B, F, T) for Conv1d."""
     def __init__(self, n_feats: int, emb_dim: int = 192, dropout: float = 0.3):
         super().__init__()
         self.emb_dim = emb_dim
@@ -32,13 +31,12 @@ class CNN1DNET(nn.Module):
             nn.Linear(256, emb_dim)
         )
 
-    def forward(self, x: torch.Tensor, return_embedding: bool = True) -> torch.Tensor:
-        x = x.transpose(1, 2)   # (B, F, T)
-        x = self.features(x)               # (B, C, T') C=256
-        x = self.pool(x).squeeze(-1)       # (B, C) C=256
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        features = features.transpose(1, 2)   # (B, F, T)
+        features = self.features(features)               # (B, C, T') C=256
+        features = self.pool(features).squeeze(-1)       # (B, C) C=256
 
-        e = self.emb(x)                    # (B, emb_dim)
+        e = self.emb(features)                    # (B, emb_dim)
         e = F.normalize(e, p=2, dim=1)     # L2 normalize for cosine
 
-        if return_embedding:
-            return e
+        return e
