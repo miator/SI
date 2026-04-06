@@ -3,27 +3,27 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = ""
+name = "Speaker Identification"
 version = "0.1.0"
 description = ""
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = "==3.9"
 license = {text = ""}
 authors = [
   {name = "", email = ""}
 ]
 
 dependencies = [
-  "numpy=2.0.2",
-  "torch=2.8.0",
-  "torchvision=0.23.0",
-  "torchaudio=2.8.0",
-  "python_speech_features = 0.6",
-  "tqdm=4.67.3",
-  "colorama=0.4.6",
-  "scikit-learn=1.6.1",
-  "scipy=1.13.1",
-  "tensorboard=2.20.0 ",
-  "torchviz=0.0.3",
-  "torchinfo=1.8.0"
+  "numpy==2.0.2",
+  "torch==2.8.0",
+  "torchvision==0.23.0",
+  "torchaudio==2.8.0",
+  "python-speech-features==0.6",
+  "tqdm==4.67.3",
+  "colorama==0.4.6",
+  "scikit-learn==1.6.1",
+  "scipy==1.13.1",
+  "tensorboard==2.20.0",
+  "torchviz==0.0.3",
+  "torchinfo==1.8.0"
 ]
