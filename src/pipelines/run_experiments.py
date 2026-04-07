@@ -6,19 +6,18 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 COOLDOWN_SECONDS = 30
+DEFAULT_VERIFY_SPLITS = ("val", "val_noisy", "test", "test_noisy")
 
 
 @dataclass(frozen=True)
 class ExperimentSpec:
     name: str
     run_name: str
-    train_feature_mode: str = "clean"
-    train_noise_feat_subdir: Optional[str] = None
+    train_feature_mode: str
     emb_dim: int = 192
     margin: float = 0.22
     p: int = 12
@@ -27,36 +26,35 @@ class ExperimentSpec:
     weight_decay: float = 1e-4
     epochs: int = 30
     dropout: float = 0.3
-    verify_splits: tuple[str, ...] = ("val", "test")
+    verify_splits: tuple[str, ...] = DEFAULT_VERIFY_SPLITS
     verify_checkpoint_types: tuple[str, ...] = ("best",)
     global_summary_name: str = "verify_summary_new.csv"
     save_verify_artifacts: bool = False
-    noise_prob: float = 1.0
-    snr_min: float = 20.0
-    snr_max: float = 20.0
 
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
-    "baseline": ExperimentSpec(
-        name="baseline",
-        run_name="baseline",
-        train_feature_mode="clean",
-        verify_splits=("val", "test"),
-        verify_checkpoint_types=("best",),
-        global_summary_name="verify_summary.csv"
+    "esc50_snr20": ExperimentSpec(
+        name="esc50_snr20",
+        run_name="esc50_snr20",
+        train_feature_mode="noise",
+    ),
+    "clean+esc50_snr20": ExperimentSpec(
+        name="clean+esc50_snr20",
+        run_name="clean+esc50_snr20",
+        train_feature_mode="both",
     ),
 }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run multiple train/verify experiments without changing other modules."
+        description="Run the precomputed-feature experiments for noise-only and clean+noise training."
     )
     parser.add_argument(
         "--experiments",
         nargs="+",
         choices=[*EXPERIMENTS.keys(), "all"],
-        default=["baseline"],
+        default=["all"],
         help="Which experiments to run.",
     )
     parser.add_argument(
@@ -102,12 +100,19 @@ def run_python_code(code: str) -> subprocess.CompletedProcess:
     )
 
 
-def precompute_shared_features(overwrite: bool) -> subprocess.CompletedProcess:
+def precompute_feature_sets(
+    *,
+    overwrite: bool,
+    need_train_noise: bool,
+    need_noisy_eval: bool,
+) -> subprocess.CompletedProcess:
     code = f"""
 from pathlib import Path
 
+from src.config import augment_config as a
 from src.config import data_config as d
 from src.config import feature_config as f
+from src.data.augment import AdditiveNoise
 from src.data.features import LogMelExtraction
 from src.pipelines import precompute_logmels as p
 
@@ -124,8 +129,11 @@ fe = LogMelExtraction(
 
 for path in (
     d.TRAIN_CLEAN_FEAT_ROOT,
+    d.TRAIN_NOISE_FEAT_ROOT,
     d.VAL_FEAT_ROOT,
+    d.VAL_NOISY_FEAT_ROOT,
     d.TEST_FEAT_ROOT,
+    d.TEST_NOISY_FEAT_ROOT,
 ):
     path.mkdir(parents=True, exist_ok=True)
 
@@ -150,65 +158,26 @@ p._precompute_split(
     fe=fe,
     overwrite={overwrite!r},
 )
-"""
-    return run_python_code(code)
 
+if {need_train_noise!r}:
+    train_augmenter = AdditiveNoise(
+        sample_rate=f.SAMPLE_RATE,
+        noise_root=d.ESC50_TRAIN_NOISE_ROOT,
+        prob=a.NOISE_PROB,
+        snr_min=a.SNR_MIN,
+        snr_max=a.SNR_MAX,
+    )
+    p._precompute_split(
+        split_name="train_noise",
+        wav_root=Path(d.TRAIN_ROOT),
+        feat_root=d.TRAIN_NOISE_FEAT_ROOT,
+        fe=fe,
+        augmenter=train_augmenter,
+        overwrite={overwrite!r},
+    )
 
-def precompute_train_noise_features(spec: ExperimentSpec, overwrite: bool) -> subprocess.CompletedProcess:
-    if spec.train_noise_feat_subdir is None:
-        return subprocess.CompletedProcess(args=[], returncode=0)
-
-    code = f"""
-from pathlib import Path
-
-from src.config import augment_config as a
-from src.config import data_config as d
-from src.config import feature_config as f
-from src.data.augment import AdditiveNoise, scan_noise_files, split_noise_paths
-from src.data.features import LogMelExtraction
-from src.pipelines import precompute_logmels as p
-
-feat_root = d.PRECOMPUTED_ROOT / {spec.train_noise_feat_subdir!r}
-feat_root.mkdir(parents=True, exist_ok=True)
-
-all_noise_paths = scan_noise_files(
-    d.MUSAN_NOISE_ROOT,
-    sample_rate=f.SAMPLE_RATE,
-    min_noise_seconds=a.MIN_NOISE_SECONDS,
-)
-train_noise_paths, _ = split_noise_paths(all_noise_paths)
-
-if not train_noise_paths:
-    raise RuntimeError("No train noise files were found.")
-
-augmenter = AdditiveNoise(
-    sample_rate=f.SAMPLE_RATE,
-    noise_paths=train_noise_paths,
-    prob={spec.noise_prob!r},
-    snr_min={spec.snr_min!r},
-    snr_max={spec.snr_max!r},
-    min_noise_seconds=a.MIN_NOISE_SECONDS,
-)
-
-fe = LogMelExtraction(
-    sample_rate=f.SAMPLE_RATE,
-    n_fft=f.N_FFT,
-    win_length=f.WIN_LENGTH,
-    hop_length=f.HOP_LENGTH,
-    n_mels=f.N_MELS,
-    f_min=f.FMIN,
-    f_max=f.FMAX,
-    eps=f.EPS,
-)
-
-p._precompute_split(
-    split_name={spec.train_noise_feat_subdir!r},
-    wav_root=Path(d.TRAIN_ROOT),
-    feat_root=feat_root,
-    fe=fe,
-    augmenter=augmenter,
-    overwrite={overwrite!r},
-)
+if {need_noisy_eval!r}:
+    p._precompute_noisy_eval_splits(fe, overwrite={overwrite!r})
 """
     return run_python_code(code)
 
@@ -238,9 +207,6 @@ t.WEIGHT_DECAY = {spec.weight_decay!r}
 
 m.EMB_DIM = {spec.emb_dim!r}
 m.DROPOUT = {spec.dropout!r}
-
-if {spec.train_noise_feat_subdir!r} is not None:
-    d.TRAIN_NOISE_FEAT_ROOT = d.PRECOMPUTED_ROOT / {spec.train_noise_feat_subdir!r}
 
 import src.pipelines.train as train_mod
 train_mod.main()
@@ -323,14 +289,27 @@ print(f"Global summary updated at: {{global_csv}}")
 def main() -> None:
     args = parse_args()
     experiments = select_experiments(args.experiments)
+    need_train_noise = any(
+        spec.train_feature_mode in {"noise", "both"}
+        for spec in experiments
+    )
+    need_noisy_eval = any(
+        split_name.endswith("_noisy")
+        for spec in experiments
+        for split_name in spec.verify_splits
+    )
 
     if not args.skip_precompute:
         print("=" * 80)
-        print("Precomputing shared clean features...")
+        print("Precomputing required feature sets...")
         print("=" * 80)
-        result = precompute_shared_features(overwrite=args.overwrite_features)
+        result = precompute_feature_sets(
+            overwrite=args.overwrite_features,
+            need_train_noise=need_train_noise,
+            need_noisy_eval=need_noisy_eval,
+        )
         if result.returncode != 0:
-            print("Shared feature precomputation failed. Stopping.")
+            print("Feature precomputation failed. Stopping.")
             return
 
     for idx, spec in enumerate(experiments, start=1):
@@ -338,15 +317,11 @@ def main() -> None:
         print(f"Experiment {idx}/{len(experiments)}: {spec.name} -> {spec.run_name}")
         print("=" * 80)
 
-        if not args.skip_precompute and spec.train_noise_feat_subdir is not None:
-            print(f"Precomputing train noise features for {spec.run_name}...")
-            result = precompute_train_noise_features(spec, overwrite=args.overwrite_features)
-            if result.returncode != 0:
-                print("Noise feature precomputation failed. Stopping.")
-                return
-
         if not args.skip_train:
-            print(f"Training {spec.run_name}...")
+            print(
+                f"Training {spec.run_name} with precomputed mode "
+                f"{spec.train_feature_mode!r}..."
+            )
             result = train_experiment(spec)
             if result.returncode != 0:
                 print("Training failed. Stopping.")
