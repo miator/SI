@@ -31,6 +31,12 @@ torch.set_num_threads(4)
 torch.set_num_interop_threads(1)
 
 
+def _labels_for_sampler(dataset, base_utterances) -> list[int]:
+    if isinstance(dataset, PrecomputedFeatureDataset):
+        return list(dataset.labels) * dataset.num_feature_roots
+    return [u.label for u in base_utterances]
+
+
 def run_epoch_batchhard(model, loader, criterion, optimizer, device, train: bool, desc: str):
     model.train() if train else model.eval()
     total_loss = 0.0
@@ -135,10 +141,10 @@ def main():
         val_ds = AudioDataset(val_utts, f.SAMPLE_RATE, fe)
         print("Using on-the-fly log-mel extraction.")
 
-    train_labels = [u.label for u in train_utts]
+    train_labels = _labels_for_sampler(train_ds, train_utts)
     train_sampler = PKSampler(train_labels, P=p, K=k, seed=37)
 
-    val_labels = [u.label for u in val_utts]
+    val_labels = _labels_for_sampler(val_ds, val_utts)
     val_sampler = PKSampler(val_labels, P=p, K=k, seed=37)
 
     collate = partial(pad_trunc_collate_fn, max_frames=f.MAX_FRAMES)
