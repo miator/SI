@@ -9,25 +9,22 @@ PRECOMPUTED_ROOT = Path(
     r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\logmel_cache"
 )
 
-MUSAN_NOISE_ROOT = Path(
-    r"C:\Users\User\Desktop\Data\musan\musan\noise"
+ESC50_NOISE_ROOT = Path(
+    r"C:\Users\User\Desktop\Data\ESC-50-master-noise\audio_standardized_16k"
 )
-
-NOISE_SPLIT_SEED = 37
-NOISE_TRAIN_FILES_FRACTION = 0.8
+ESC50_TRAIN_NOISE_ROOT = ESC50_NOISE_ROOT / "train-noise"
+ESC50_VAL_NOISE_ROOT = ESC50_NOISE_ROOT / "val-noise"
+ESC50_TEST_NOISE_ROOT = ESC50_NOISE_ROOT / "test-noise"
 
 TRAIN_CLEAN_FEAT_ROOT = PRECOMPUTED_ROOT / "train"
 TRAIN_NOISE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_noise"
 VAL_FEAT_ROOT = PRECOMPUTED_ROOT / "val"
+VAL_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "val_noise"
 TEST_FEAT_ROOT = PRECOMPUTED_ROOT / "test"
-VAL_NOISY_SNR15_FEAT_ROOT = PRECOMPUTED_ROOT / "val_noisy_snr15"
-TEST_NOISY_SNR15_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noisy_snr15"
-TEST_NOISY_SNR10_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noisy_snr10"
-TRAIN_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_white_snr10_20"
-TRAIN_MUSAN_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_musan_white_snr10_20"
+TEST_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noise"
 
 USE_PRECOMPUTED_FEATURES = True
-TRAIN_FEATURE_MODE = "clean+noise"
+TRAIN_FEATURE_MODE = "clean"
 
 
 def get_eval_split_definitions() -> dict[str, dict[str, Union[Path, float, bool, None]]]:
@@ -35,31 +32,29 @@ def get_eval_split_definitions() -> dict[str, dict[str, Union[Path, float, bool,
         "val": {
             "wav_root": Path(VAL_ROOT),
             "feat_root": VAL_FEAT_ROOT,
+            "noise_root": None,
             "snr": None,
             "is_noisy": False,
         },
-        "val_noisy_snr15": {
+        "val_noisy": {
             "wav_root": Path(VAL_ROOT),
-            "feat_root": VAL_NOISY_SNR15_FEAT_ROOT,
-            "snr": 15.0,
+            "feat_root": VAL_NOISY_FEAT_ROOT,
+            "noise_root": ESC50_VAL_NOISE_ROOT,
+            "snr": 20.0,
             "is_noisy": True,
         },
         "test": {
             "wav_root": Path(TEST_ROOT),
             "feat_root": TEST_FEAT_ROOT,
+            "noise_root": None,
             "snr": None,
             "is_noisy": False,
         },
-        "test_noisy_snr15": {
+        "test_noisy": {
             "wav_root": Path(TEST_ROOT),
-            "feat_root": TEST_NOISY_SNR15_FEAT_ROOT,
-            "snr": 15.0,
-            "is_noisy": True,
-        },
-        "test_noisy_snr10": {
-            "wav_root": Path(TEST_ROOT),
-            "feat_root": TEST_NOISY_SNR10_FEAT_ROOT,
-            "snr": 10.0,
+            "feat_root": TEST_NOISY_FEAT_ROOT,
+            "noise_root": ESC50_TEST_NOISE_ROOT,
+            "snr": 20.0,
             "is_noisy": True,
         },
     }
@@ -71,14 +66,6 @@ def get_train_feat_roots(train_feature_mode: Optional[str] = None):
         return [TRAIN_CLEAN_FEAT_ROOT]
     if mode == "noise":
         return [TRAIN_NOISE_FEAT_ROOT]
-    if mode == "clean+noise":
+    if mode == "both":
         return [TRAIN_CLEAN_FEAT_ROOT, TRAIN_NOISE_FEAT_ROOT]
-    if mode == "clean+white":
-        return [TRAIN_CLEAN_FEAT_ROOT, TRAIN_WHITE_FEAT_ROOT]
-    if mode == "clean+musan+white":
-        return [TRAIN_CLEAN_FEAT_ROOT, TRAIN_MUSAN_WHITE_FEAT_ROOT]
-    if mode == "white":
-        return [TRAIN_WHITE_FEAT_ROOT]
-    if mode == "musan+white":
-        return [TRAIN_MUSAN_WHITE_FEAT_ROOT]
     raise ValueError(f"Unsupported TRAIN_FEATURE_MODE: {mode}")
