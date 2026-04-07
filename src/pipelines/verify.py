@@ -397,14 +397,14 @@ def main():
     model = CNN1DNET(
         n_feats=f.N_MELS,
         emb_dim=emb_dim,
-        dropout=0.3
+        dropout=m.DROPOUT
     ).to(device)
 
     model.load_state_dict(ckpt["model_state_dict"])
 
     rows = []
     eval_definitions = d.get_eval_split_definitions()
-    selected_splits = {"val", "test"}
+    selected_splits = tuple(eval_definitions.keys())
 
     for split_name, split_def in eval_definitions.items():
         if split_name not in selected_splits:
