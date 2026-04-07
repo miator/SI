@@ -8,7 +8,7 @@ import torch
 from src.config import augment_config as a
 from src.config import data_config as d
 from src.config import feature_config as f
-from src.data.augment import AdditiveNoise, scan_noise_files, split_noise_paths
+from src.data.augment import AdditiveNoise
 from src.data.dataset import (
     read_audio_fast,
     save_feature_tensor,
@@ -45,41 +45,20 @@ def _precompute_split(
         save_feature_tensor(out_path, feat)
 
 
-def _build_train_eval_noise_file_lists():
-    all_noise_paths = scan_noise_files(
-        d.MUSAN_NOISE_ROOT,
-        sample_rate=f.SAMPLE_RATE,
-        min_noise_seconds=a.MIN_NOISE_SECONDS,
-    )
-    train_noise_paths, eval_noise_paths = split_noise_paths(all_noise_paths)
-
-    if not train_noise_paths:
-        raise RuntimeError("No noise files were assigned to the training subset.")
-    if not eval_noise_paths:
-        raise RuntimeError(
-            "No noise files were assigned to the evaluation subset. "
-            "Reduce NOISE_TRAIN_FILES_FRACTION or add more noise files."
-        )
-
-    return train_noise_paths, eval_noise_paths
-
-
 def _precompute_noisy_eval_splits(fe, overwrite: bool = False):
-    _, eval_noise_paths = _build_train_eval_noise_file_lists()
-
-    for idx, (split_name, split_def) in enumerate(
-        d.get_eval_split_definitions().items(), start=1
-    ):
+    for split_name, split_def in d.get_eval_split_definitions().items():
         if not split_def["is_noisy"]:
             continue
+        noise_root = split_def["noise_root"]
+        if noise_root is None:
+            raise RuntimeError(f"No noise root configured for noisy split: {split_name}")
 
         augmenter = AdditiveNoise(
             sample_rate=f.SAMPLE_RATE,
-            noise_paths=eval_noise_paths,
+            noise_root=noise_root,
             prob=1.0,
             snr_min=split_def["snr"],
             snr_max=split_def["snr"],
-            min_noise_seconds=a.MIN_NOISE_SECONDS,
         )
         _precompute_split(
             split_name=split_name,
@@ -96,9 +75,9 @@ def main():
     random.seed(SEED)
     torch.manual_seed(SEED)
 
-    train_mode = "clean"          # "clean", "noise", "both"
+    train_mode = "noise"          # "clean", "noise", "both"
     overwrite = False             # False = skip existing, True = recompute
-    include_noisy_eval = False    # True = also precompute noisy eval splits
+    include_noisy_eval = True     # True = also precompute noisy eval splits
 
     fe = LogMelExtraction(
         sample_rate=f.SAMPLE_RATE,
@@ -115,10 +94,9 @@ def main():
         d.TRAIN_CLEAN_FEAT_ROOT,
         d.TRAIN_NOISE_FEAT_ROOT,
         d.VAL_FEAT_ROOT,
+        d.VAL_NOISY_FEAT_ROOT,
         d.TEST_FEAT_ROOT,
-        d.VAL_NOISY_SNR15_FEAT_ROOT,
-        d.TEST_NOISY_SNR15_FEAT_ROOT,
-        d.TEST_NOISY_SNR10_FEAT_ROOT,
+        d.TEST_NOISY_FEAT_ROOT,
     ]
     for path in directories:
         path.mkdir(parents=True, exist_ok=True)
@@ -135,11 +113,10 @@ def main():
     if train_mode in {"noise", "both"}:
         augmenter = AdditiveNoise(
             sample_rate=f.SAMPLE_RATE,
-            noise_root=d.MUSAN_NOISE_ROOT,
+            noise_root=d.ESC50_TRAIN_NOISE_ROOT,
             prob=a.NOISE_PROB,
             snr_min=a.SNR_MIN,
             snr_max=a.SNR_MAX,
-            min_noise_seconds=a.MIN_NOISE_SECONDS,
         )
         _precompute_split(
             split_name="train_noise",
