@@ -28,7 +28,7 @@ from src.models.samplers import PKSampler
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
 torch.set_num_threads(4)
-torch.set_num_interop_threads(1)
+# torch.set_num_interop_threads(1)
 
 
 def _labels_for_sampler(dataset, base_utterances) -> list[int]:
@@ -156,8 +156,8 @@ def main():
         shuffle=False,
         # drop_last=True,
         collate_fn=collate,
-        num_workers=6,
-        prefetch_factor=2,
+        num_workers=2,
+        prefetch_factor=1,
         persistent_workers=True)
 
     val_loader = DataLoader(
@@ -167,8 +167,8 @@ def main():
         shuffle=False,
         # drop_last=True,
         collate_fn=collate,
-        num_workers=6,
-        prefetch_factor=2,
+        num_workers=2,
+        prefetch_factor=1,
         persistent_workers=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
