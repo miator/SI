@@ -6,18 +6,24 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-COOLDOWN_SECONDS = 30
+COOLDOWN_SECONDS = 10
 DEFAULT_VERIFY_SPLITS = ("val", "val_noisy", "test", "test_noisy")
+NOISY_VERIFY_SPLITS = ("val_noisy", "test_noisy")
+CLEAN_VERIFY_SPLITS = ("val", "test")
 
 
 @dataclass(frozen=True)
 class ExperimentSpec:
     name: str
     run_name: str
-    train_feature_mode: str
+    train_feature_mode: Optional[str] = None
+    train_snr_min: Optional[float] = None
+    train_snr_max: Optional[float] = None
+    train_noise_cache_name: Optional[str] = None
     emb_dim: int = 192
     margin: float = 0.22
     p: int = 12
@@ -30,25 +36,26 @@ class ExperimentSpec:
     verify_checkpoint_types: tuple[str, ...] = ("best",)
     global_summary_name: str = "verify_summary_new.csv"
     save_verify_artifacts: bool = False
+    run_train: bool = True
 
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
-    "esc50_snr20": ExperimentSpec(
-        name="esc50_snr20",
-        run_name="esc50_snr20",
-        train_feature_mode="noise",
-    ),
-    "clean+esc50_snr20": ExperimentSpec(
-        name="clean+esc50_snr20",
-        run_name="clean+esc50_snr20",
-        train_feature_mode="both",
+    "run 1": ExperimentSpec(
+        name="run 1",
+        run_name="cnn1d_emb192_m022_P12K5_lr00005",
+        run_train=False,
+        verify_splits=CLEAN_VERIFY_SPLITS,
+        verify_checkpoint_types=("best",),
     ),
 }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the precomputed-feature experiments for noise-only and clean+noise training."
+        description=(
+            "Run precomputed-feature training/verification experiments, "
+            "including evaluation-only presets for existing checkpoints."
+        )
     )
     parser.add_argument(
         "--experiments",
@@ -100,16 +107,20 @@ def run_python_code(code: str) -> subprocess.CompletedProcess:
     )
 
 
+def get_last_checkpoint_path(spec: ExperimentSpec) -> Path:
+    return PROJECT_ROOT / "runs" / spec.run_name / "checkpoints" / "last.pt"
+
+
 def precompute_feature_sets(
     *,
     overwrite: bool,
-    need_train_noise: bool,
+    need_train_clean: bool,
+    train_noise_variants: tuple[tuple[str, float, float], ...],
     need_noisy_eval: bool,
 ) -> subprocess.CompletedProcess:
     code = f"""
 from pathlib import Path
 
-from src.config import augment_config as a
 from src.config import data_config as d
 from src.config import feature_config as f
 from src.data.augment import AdditiveNoise
@@ -128,8 +139,6 @@ fe = LogMelExtraction(
 )
 
 for path in (
-    d.TRAIN_CLEAN_FEAT_ROOT,
-    d.TRAIN_NOISE_FEAT_ROOT,
     d.VAL_FEAT_ROOT,
     d.VAL_NOISY_FEAT_ROOT,
     d.TEST_FEAT_ROOT,
@@ -137,13 +146,15 @@ for path in (
 ):
     path.mkdir(parents=True, exist_ok=True)
 
-p._precompute_split(
-    split_name="train_clean",
-    wav_root=Path(d.TRAIN_ROOT),
-    feat_root=d.TRAIN_CLEAN_FEAT_ROOT,
-    fe=fe,
-    overwrite={overwrite!r},
-)
+if {need_train_clean!r}:
+    d.TRAIN_CLEAN_FEAT_ROOT.mkdir(parents=True, exist_ok=True)
+    p._precompute_split(
+        split_name="train_clean",
+        wav_root=Path(d.TRAIN_ROOT),
+        feat_root=d.TRAIN_CLEAN_FEAT_ROOT,
+        fe=fe,
+        overwrite={overwrite!r},
+    )
 p._precompute_split(
     split_name="val",
     wav_root=Path(d.VAL_ROOT),
@@ -159,18 +170,20 @@ p._precompute_split(
     overwrite={overwrite!r},
 )
 
-if {need_train_noise!r}:
+for cache_name, snr_min, snr_max in {list(train_noise_variants)!r}:
+    feat_root = Path(d.PRECOMPUTED_ROOT) / cache_name
+    feat_root.mkdir(parents=True, exist_ok=True)
     train_augmenter = AdditiveNoise(
         sample_rate=f.SAMPLE_RATE,
         noise_root=d.ESC50_TRAIN_NOISE_ROOT,
-        prob=a.NOISE_PROB,
-        snr_min=a.SNR_MIN,
-        snr_max=a.SNR_MAX,
+        prob=1.0,
+        snr_min=snr_min,
+        snr_max=snr_max,
     )
     p._precompute_split(
-        split_name="train_noise",
+        split_name=f"train_noise:{{cache_name}}",
         wav_root=Path(d.TRAIN_ROOT),
-        feat_root=d.TRAIN_NOISE_FEAT_ROOT,
+        feat_root=feat_root,
         fe=fe,
         augmenter=train_augmenter,
         overwrite={overwrite!r},
@@ -184,6 +197,8 @@ if {need_noisy_eval!r}:
 
 def train_experiment(spec: ExperimentSpec) -> subprocess.CompletedProcess:
     code = f"""
+from pathlib import Path
+
 from src.config import data_config as d
 from src.config import experiment_config as e
 from src.config import model_config as m
@@ -198,6 +213,9 @@ e.BEST_MODEL_PATH = e.CKPT_DIR / "best.pt"
 e.LAST_MODEL_PATH = e.CKPT_DIR / "last.pt"
 
 d.TRAIN_FEATURE_MODE = {spec.train_feature_mode!r}
+if {spec.train_noise_cache_name!r} is not None:
+    d.TRAIN_NOISE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / {spec.train_noise_cache_name!r}
+
 t.MARGIN = {spec.margin!r}
 t.P = {spec.p!r}
 t.K = {spec.k!r}
@@ -237,6 +255,8 @@ e.LAST_MODEL_PATH = e.CKPT_DIR / "last.pt"
 
 m.EMB_DIM = {spec.emb_dim!r}
 m.DROPOUT = {spec.dropout!r}
+if {spec.train_noise_cache_name!r} is not None:
+    d.TRAIN_NOISE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / {spec.train_noise_cache_name!r}
 
 run_root = Path(e.RUNS_DIR) / e.EXP_NAME
 verify_dir = run_root / "results" / "verify"
@@ -257,7 +277,7 @@ for checkpoint_type in checkpoint_types:
         emb_dim=m.EMB_DIM,
         dropout=m.DROPOUT,
     ).to(device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    verify_mod.load_checkpoint_into_model(model, ckpt["model_state_dict"])
 
     eval_definitions = d.get_eval_split_definitions()
     for split_name, split_def in eval_definitions.items():
@@ -289,9 +309,30 @@ print(f"Global summary updated at: {{global_csv}}")
 def main() -> None:
     args = parse_args()
     experiments = select_experiments(args.experiments)
-    need_train_noise = any(
-        spec.train_feature_mode in {"noise", "both"}
+    experiments_needing_training = [
+        spec
         for spec in experiments
+        if spec.run_train
+        and not args.skip_train
+        and not get_last_checkpoint_path(spec).exists()
+    ]
+    need_train_clean = any(
+        spec.train_feature_mode in {"clean", "both"}
+        for spec in experiments_needing_training
+    )
+    train_noise_variants = tuple(
+        dict.fromkeys(
+            (
+                spec.train_noise_cache_name,
+                spec.train_snr_min,
+                spec.train_snr_max,
+            )
+            for spec in experiments_needing_training
+            if spec.train_feature_mode in {"noise", "both"}
+            and spec.train_noise_cache_name is not None
+            and spec.train_snr_min is not None
+            and spec.train_snr_max is not None
+        )
     )
     need_noisy_eval = any(
         split_name.endswith("_noisy")
@@ -305,7 +346,8 @@ def main() -> None:
         print("=" * 80)
         result = precompute_feature_sets(
             overwrite=args.overwrite_features,
-            need_train_noise=need_train_noise,
+            need_train_clean=need_train_clean,
+            train_noise_variants=train_noise_variants,
             need_noisy_eval=need_noisy_eval,
         )
         if result.returncode != 0:
@@ -317,15 +359,21 @@ def main() -> None:
         print(f"Experiment {idx}/{len(experiments)}: {spec.name} -> {spec.run_name}")
         print("=" * 80)
 
-        if not args.skip_train:
-            print(
-                f"Training {spec.run_name} with precomputed mode "
-                f"{spec.train_feature_mode!r}..."
-            )
-            result = train_experiment(spec)
-            if result.returncode != 0:
-                print("Training failed. Stopping.")
-                return
+        if spec.run_train and not args.skip_train:
+            last_checkpoint = get_last_checkpoint_path(spec)
+            if last_checkpoint.exists():
+                print(f"Skipping training because checkpoint already exists: {last_checkpoint}")
+            else:
+                print(
+                    f"Training {spec.run_name} with precomputed mode "
+                    f"{spec.train_feature_mode!r}..."
+                )
+                result = train_experiment(spec)
+                if result.returncode != 0:
+                    print("Training failed. Stopping.")
+                    return
+        elif not spec.run_train:
+            print(f"Skipping training for evaluation-only experiment {spec.name}.")
 
         if not args.skip_verify:
             print(f"Verifying {spec.run_name} on {', '.join(spec.verify_splits)}...")
