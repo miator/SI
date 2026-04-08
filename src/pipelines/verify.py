@@ -40,6 +40,8 @@ SUMMARY_FIELDNAMES = [
     "diff_mean",
     "diff_std"]
 
+IGNORED_CHECKPOINT_PREFIXES = ("classifier.",)
+
 
 def resolve_checkpoint_path(run_root: Path, checkpoint_type: str) -> Path:
     if checkpoint_type == "best":
@@ -53,6 +55,33 @@ def resolve_checkpoint_path(run_root: Path, checkpoint_type: str) -> Path:
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
     return path
+
+
+def load_checkpoint_into_model(model: torch.nn.Module, state_dict: dict[str, torch.Tensor]) -> None:
+    filtered_state_dict = {
+        key: value
+        for key, value in state_dict.items()
+        if not key.startswith(IGNORED_CHECKPOINT_PREFIXES)
+    }
+    ignored_keys = sorted(set(state_dict) - set(filtered_state_dict))
+
+    missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
+
+    if missing_keys:
+        raise RuntimeError(
+            "Checkpoint is missing required model weights: "
+            + ", ".join(missing_keys)
+        )
+    if unexpected_keys:
+        raise RuntimeError(
+            "Checkpoint contains unexpected non-ignored weights: "
+            + ", ".join(unexpected_keys)
+        )
+    if ignored_keys:
+        print(
+            "Ignoring legacy checkpoint weights not used for verification: "
+            + ", ".join(ignored_keys)
+        )
 
 
 def load_metrics_rows(csv_path: Path) -> list[dict[str, str]]:
@@ -400,7 +429,7 @@ def main():
         dropout=m.DROPOUT
     ).to(device)
 
-    model.load_state_dict(ckpt["model_state_dict"])
+    load_checkpoint_into_model(model, ckpt["model_state_dict"])
 
     rows = []
     eval_definitions = d.get_eval_split_definitions()
