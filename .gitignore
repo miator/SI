@@ -13,5 +13,5 @@ __pycache__/
 
 .DS_Store
 
-runs/
+runs_cnn1d/
 *.tfevents
