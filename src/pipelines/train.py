@@ -17,6 +17,7 @@ from src.config import train_config as t
 from src.data.dataset import (
     AudioDataset,
     PrecomputedFeatureDataset,
+    RandomChoicePrecomputedFeatureDataset,
     pad_trunc_collate_fn,
     scan_split,
     build_label_map,
@@ -63,6 +64,8 @@ def _emit_collapse_status(exc: CollapsedTrainingError) -> None:
 
 
 def _labels_for_sampler(dataset, base_utterances) -> list[int]:
+    if isinstance(dataset, RandomChoicePrecomputedFeatureDataset):
+        return list(dataset.labels)
     if isinstance(dataset, PrecomputedFeatureDataset):
         return list(dataset.labels) * dataset.num_feature_roots
     return [u.label for u in base_utterances]
@@ -146,19 +149,30 @@ def main():
     print("=" * 100)
 
     if d.USE_PRECOMPUTED_FEATURES:
-        train_feat_roots = d.get_train_feat_roots(train_feature_mode)
-        train_feat_str = ",".join(str(p) for p in train_feat_roots)
-        train_ds = PrecomputedFeatureDataset(
+        train_feature_keys = d.get_train_feature_root_keys(train_feature_mode)
+        train_feature_roots = {
+            key: d.get_train_feat_root(key)
+            for key in train_feature_keys
+        }
+        train_feature_probabilities = d.get_train_feature_probabilities(train_feature_mode)
+        train_feat_str = ",".join(
+            f"{key}:{root}"
+            for key, root in train_feature_roots.items()
+        )
+        train_ds = RandomChoicePrecomputedFeatureDataset(
             train_utts,
             split_root=d.TRAIN_ROOT,
-            feat_root=train_feat_roots)
+            feature_roots=train_feature_roots,
+            probabilities=train_feature_probabilities)
         val_ds = PrecomputedFeatureDataset(
             val_utts,
             split_root=d.VAL_ROOT,
             feat_root=d.VAL_FEAT_ROOT)
         print(
             f"Using precomputed features: "
-            f"train={train_feat_roots} | val={d.VAL_FEAT_ROOT}")
+            f"train={train_feature_roots} | "
+            f"train_probs={train_feature_probabilities} | "
+            f"val={d.VAL_FEAT_ROOT}")
     else:
         train_feat_str = "on_the_fly"
         fe = LogMelExtraction(
@@ -240,6 +254,7 @@ def main():
                 f"dropout={m.DROPOUT}",
                 f"train_feature_mode={train_feature_mode}",
                 f"train_feat_roots={train_feat_str}",
+                f"train_feature_probabilities={train_feature_probabilities}",
                 f"epochs={epochs}",
                 f"run_root={run_root}",
                 f"best_model_path={best_model_path}",
