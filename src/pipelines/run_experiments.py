@@ -13,6 +13,7 @@ from src.config import data_config as d
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 COOLDOWN_SECONDS = 20
+COLLAPSED_TRAINING_EXIT_CODE = 42
 DEFAULT_VERIFY_SPLITS = (
     "val", "val_noise", "val_white",
     "test", "test_noise", "test_white")
@@ -53,55 +54,47 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
     "1": ExperimentSpec(
         name="clean+esc50_snr20+white_snr20",
         run_name="clean+esc50_snr20+white_snr20",
-        train_feature_mode="clean+noise+white",
-        train_augments=(
-            ("noise", "train_noise", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr20", 1.0, 20.0, 20.0),
-        ),
+        run_train=False
     ),
     "2": ExperimentSpec(
         name="clean+esc50_snr20+white_snr10_20",
         run_name="clean+esc50_snr20+white_snr10_20",
-        train_feature_mode="clean+noise+white",
-        train_augments=(
-            ("noise", "train_noise", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr10_20", 1.0, 10.0, 20.0),
-        ),
+        run_train=False
     ),
-    "3": ExperimentSpec(
-        name="clean+esc50_snr20+white_snr25",
-        run_name="clean+esc50_snr20+white_snr25",
-        train_feature_mode="clean+noise+white",
-        train_augments=(
-            ("noise", "train_noise", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
-        ),
-    ),
-    "4": ExperimentSpec(
-        name="clean+esc50_snr20+white_snr20_30",
-        run_name="clean+esc50_snr20+white_snr20_30",
-        train_feature_mode="clean+noise+white",
-        train_augments=(
-            ("noise", "train_noise", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr20_30", 1.0, 20.0, 30.0),
-        ),
-    ),
-    "5": ExperimentSpec(
-        name="clean+white_snr25",
-        run_name="clean+white_snr25",
-        train_feature_mode="clean+white",
-        train_augments=(
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
-        ),
-    ),
-    "6": ExperimentSpec(
-        name="clean+white_snr20_30",
-        run_name="clean+white_snr20_30",
-        train_feature_mode="clean+white",
-        train_augments=(
-            ("white", "train_white_snr20_30", 1.0, 20.0, 30.0),
-        ),
-    ),
+    # "3": ExperimentSpec(
+    #     name="clean+esc50_snr20+white_snr25",
+    #     run_name="clean+esc50_snr20+white_snr25",
+    #     train_feature_mode="clean+noise+white",
+    #     train_augments=(
+    #         ("noise", "train_noise", 1.0, 20.0, 20.0),
+    #         ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+    #     ),
+    # ),
+    # "4": ExperimentSpec(
+    #     name="clean+esc50_snr20+white_snr20_30",
+    #     run_name="clean+esc50_snr20+white_snr20_30",
+    #     train_feature_mode="clean+noise+white",
+    #     train_augments=(
+    #         ("noise", "train_noise", 1.0, 20.0, 20.0),
+    #         ("white", "train_white_snr20_30", 1.0, 20.0, 30.0),
+    #     ),
+    # ),
+    # "5": ExperimentSpec(
+    #     name="clean+white_snr25",
+    #     run_name="clean+white_snr25",
+    #     train_feature_mode="clean+white",
+    #     train_augments=(
+    #         ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+    #     ),
+    # ),
+    # "6": ExperimentSpec(
+    #     name="clean+white_snr20_30",
+    #     run_name="clean+white_snr20_30",
+    #     train_feature_mode="clean+white",
+    #     train_augments=(
+    #         ("white", "train_white_snr20_30", 1.0, 20.0, 30.0),
+    #     ),
+    # ),
 }
 
 
@@ -381,7 +374,11 @@ m.EMB_DIM = {spec.emb_dim!r}
 m.DROPOUT = {spec.dropout!r}
 
 import src.pipelines.train as train_mod
-train_mod.main()
+try:
+    train_mod.main()
+except train_mod.CollapsedTrainingError as exc:
+    train_mod._emit_collapse_status(exc)
+    raise SystemExit({COLLAPSED_TRAINING_EXIT_CODE})
 """
     return run_python_code(code)
 
@@ -494,6 +491,7 @@ def main() -> None:
 
         if spec.run_train and not args.skip_train:
             last_checkpoint = get_last_checkpoint_path(spec)
+            training_collapsed = False
             if last_checkpoint.exists():
                 print(f"Skipping training because checkpoint already exists: {last_checkpoint}")
             else:
@@ -502,13 +500,24 @@ def main() -> None:
                     f"{spec.train_feature_mode!r}..."
                 )
                 result = train_experiment(spec)
-                if result.returncode != 0:
+                if result.returncode == COLLAPSED_TRAINING_EXIT_CODE:
+                    training_collapsed = True
+                    print(
+                        f"Training aborted early due to collapse for {spec.run_name}. "
+                        "Skipping verification and continuing."
+                    )
+                elif result.returncode != 0:
                     print("Training failed. Stopping.")
                     return
         elif not spec.run_train:
+            training_collapsed = False
             print(f"Skipping training for evaluation-only experiment {spec.name}.")
+        else:
+            training_collapsed = False
 
-        if not args.skip_verify:
+        if training_collapsed:
+            pass
+        elif not args.skip_verify:
             print(f"Verifying {spec.run_name} on {', '.join(spec.verify_splits)}...")
             result = verify_experiment(spec)
             if result.returncode != 0:
