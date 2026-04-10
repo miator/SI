@@ -28,6 +28,7 @@ TEST_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "test_white_snr20"
 
 USE_PRECOMPUTED_FEATURES = True
 TRAIN_FEATURE_MODE = "clean"
+TRAIN_FEATURE_PROBABILITIES: Optional[dict[str, float]] = None
 
 
 def get_eval_split_definitions() -> dict[str, dict[str, Union[Path, float, bool, None, str]]]:
@@ -116,3 +117,30 @@ def get_train_feat_roots(train_feature_mode: Optional[str] = None):
     return [
         get_train_feat_root(key)
         for key in get_train_feature_root_keys(train_feature_mode)]
+
+
+def get_train_feature_probabilities(
+    train_feature_mode: Optional[str] = None,
+    train_feature_probabilities: Optional[dict[str, float]] = None,
+) -> dict[str, float]:
+    mode_keys = get_train_feature_root_keys(train_feature_mode)
+    configured = (
+        TRAIN_FEATURE_PROBABILITIES
+        if train_feature_probabilities is None
+        else train_feature_probabilities
+    )
+
+    if configured is None:
+        uniform_probability = 1.0 / len(mode_keys)
+        return {key: uniform_probability for key in mode_keys}
+
+    unknown = sorted(set(configured) - set(mode_keys))
+    if unknown:
+        raise ValueError(
+            f"Unsupported train feature probability keys for mode {train_feature_mode!r}: {unknown}"
+        )
+
+    return {
+        key: float(configured.get(key, 0.0))
+        for key in mode_keys
+    }
