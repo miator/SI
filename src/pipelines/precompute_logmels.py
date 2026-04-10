@@ -8,7 +8,7 @@ import torch
 from src.config import augment_config as a
 from src.config import data_config as d
 from src.config import feature_config as f
-from src.data.augment import AdditiveNoise
+from src.data.augment import build_waveform_augmenter
 from src.data.dataset import (
     read_audio_fast,
     save_feature_tensor,
@@ -45,15 +45,20 @@ def _precompute_split(
         save_feature_tensor(out_path, feat)
 
 
-def _precompute_noisy_eval_splits(fe, overwrite: bool = False):
+def _precompute_augmented_eval_splits(fe, overwrite: bool = False):
     for split_name, split_def in d.get_eval_split_definitions().items():
         if not split_def["is_noisy"]:
             continue
+        augment_kind = split_def["augment_kind"]
+        if augment_kind is None:
+            raise RuntimeError(f"No augmenter kind configured for noisy split: {split_name}")
+
         noise_root = split_def["noise_root"]
-        if noise_root is None:
+        if augment_kind == "noise" and noise_root is None:
             raise RuntimeError(f"No noise root configured for noisy split: {split_name}")
 
-        augmenter = AdditiveNoise(
+        augmenter = build_waveform_augmenter(
+            kind=augment_kind,
             sample_rate=f.SAMPLE_RATE,
             noise_root=noise_root,
             prob=1.0,
@@ -75,9 +80,10 @@ def main():
     random.seed(SEED)
     torch.manual_seed(SEED)
 
-    train_mode = "noise"          # "clean", "noise", "both"
+    train_mode = "noise"          # "clean", "noise", "both", "white", "clean+white"
     overwrite = False             # False = skip existing, True = recompute
-    include_noisy_eval = True     # True = also precompute noisy eval splits
+    include_augmented_eval = True     # True = also precompute augmented eval splits
+    train_feature_keys = d.get_train_feature_root_keys(train_mode)
 
     fe = LogMelExtraction(
         sample_rate=f.SAMPLE_RATE,
@@ -91,17 +97,18 @@ def main():
     )
 
     directories = [
-        d.TRAIN_CLEAN_FEAT_ROOT,
-        d.TRAIN_NOISE_FEAT_ROOT,
+        *d.get_train_feat_roots(train_mode),
         d.VAL_FEAT_ROOT,
         d.VAL_NOISY_FEAT_ROOT,
+        d.VAL_WHITE_FEAT_ROOT,
         d.TEST_FEAT_ROOT,
         d.TEST_NOISY_FEAT_ROOT,
+        d.TEST_WHITE_FEAT_ROOT,
     ]
     for path in directories:
         path.mkdir(parents=True, exist_ok=True)
 
-    if train_mode in {"clean", "both"}:
+    if "clean" in train_feature_keys:
         _precompute_split(
             split_name="train_clean",
             wav_root=Path(d.TRAIN_ROOT),
@@ -110,8 +117,9 @@ def main():
             overwrite=overwrite,
         )
 
-    if train_mode in {"noise", "both"}:
-        augmenter = AdditiveNoise(
+    if "noise" in train_feature_keys:
+        augmenter = build_waveform_augmenter(
+            kind="noise",
             sample_rate=f.SAMPLE_RATE,
             noise_root=d.ESC50_TRAIN_NOISE_ROOT,
             prob=a.NOISE_PROB,
@@ -122,6 +130,23 @@ def main():
             split_name="train_noise",
             wav_root=Path(d.TRAIN_ROOT),
             feat_root=d.TRAIN_NOISE_FEAT_ROOT,
+            fe=fe,
+            augmenter=augmenter,
+            overwrite=overwrite,
+        )
+
+    if "white" in train_feature_keys:
+        augmenter = build_waveform_augmenter(
+            kind="white",
+            sample_rate=f.SAMPLE_RATE,
+            prob=a.WHITE_NOISE_PROB,
+            snr_min=a.WHITE_SNR_MIN,
+            snr_max=a.WHITE_SNR_MAX,
+        )
+        _precompute_split(
+            split_name="train_white",
+            wav_root=Path(d.TRAIN_ROOT),
+            feat_root=d.TRAIN_WHITE_FEAT_ROOT,
             fe=fe,
             augmenter=augmenter,
             overwrite=overwrite,
@@ -142,8 +167,8 @@ def main():
         overwrite=overwrite,
     )
 
-    if include_noisy_eval:
-        _precompute_noisy_eval_splits(fe, overwrite=overwrite)
+    if include_augmented_eval:
+        _precompute_augmented_eval_splits(fe, overwrite=overwrite)
 
     print("Done.")
 
