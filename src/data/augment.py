@@ -29,6 +29,25 @@ def scan_noise_files(
     return valid_paths
 
 
+def _mix_with_snr(
+    speech: torch.Tensor,
+    noise: torch.Tensor,
+    *,
+    snr_min: float,
+    snr_max: float,
+    eps: float,
+) -> torch.Tensor:
+    snr_db = random.uniform(snr_min, snr_max)
+
+    speech_rms = speech.pow(2).mean().sqrt().clamp_min(eps)
+    noise_rms = noise.pow(2).mean().sqrt().clamp_min(eps)
+    desired_noise_rms = speech_rms / (10.0 ** (snr_db / 20.0))
+    scaled_noise = noise * (desired_noise_rms / noise_rms)
+
+    mixed = speech + scaled_noise
+    return mixed.clamp_(-1.0, 1.0)
+
+
 class AdditiveNoise:
     def __init__(
         self,
@@ -52,15 +71,13 @@ class AdditiveNoise:
         elif self.noise_root is not None:
             self.noise_paths = scan_noise_files(
                 self.noise_root,
-                sample_rate=self.sample_rate,
-            )
+                sample_rate=self.sample_rate)
         else:
             self.noise_paths = []
 
         if not self.noise_paths:
             raise RuntimeError(
-                "At least one external noise source must be enabled."
-            )
+                "At least one external noise source must be enabled.")
 
     def _load_noise(self, path: Path) -> torch.Tensor:
         wav, sr = torchaudio.load(path)
@@ -93,15 +110,12 @@ class AdditiveNoise:
         return self._crop_noise_length(noise, target_length)
 
     def _mix(self, speech: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
-        snr_db = random.uniform(self.snr_min, self.snr_max)
-
-        speech_rms = speech.pow(2).mean().sqrt().clamp_min(self.eps)
-        noise_rms = noise.pow(2).mean().sqrt().clamp_min(self.eps)
-        desired_noise_rms = speech_rms / (10.0 ** (snr_db / 20.0))
-        scaled_noise = noise * (desired_noise_rms / noise_rms)
-
-        mixed = speech + scaled_noise
-        return mixed.clamp_(-1.0, 1.0)
+        return _mix_with_snr(
+            speech,
+            noise,
+            snr_min=self.snr_min,
+            snr_max=self.snr_max,
+            eps=self.eps)
 
     def __call__(self, speech: torch.Tensor) -> torch.Tensor:
         speech = speech.to(torch.float32)
@@ -110,3 +124,60 @@ class AdditiveNoise:
 
         noise = self._sample_noise(target_length=speech.numel())
         return self._mix(speech, noise)
+
+
+class WhiteNoise:
+    def __init__(
+        self,
+        sample_rate: int,
+        prob: float = 1.0,
+        snr_min: float = 20.0,
+        snr_max: float = 20.0,
+        eps: float = 1e-8,
+    ):
+        self.sample_rate = sample_rate
+        self.prob = prob
+        self.snr_min = snr_min
+        self.snr_max = snr_max
+        self.eps = eps
+
+    def __call__(self, speech: torch.Tensor) -> torch.Tensor:
+        speech = speech.to(torch.float32)
+        if random.random() > self.prob:
+            return speech.clamp(-1.0, 1.0)
+
+        return _mix_with_snr(
+            speech,
+            torch.randn_like(speech),
+            snr_min=self.snr_min,
+            snr_max=self.snr_max,
+            eps=self.eps)
+
+
+def build_waveform_augmenter(
+    kind: str,
+    sample_rate: int,
+    prob: float = 1.0,
+    snr_min: float = 20.0,
+    snr_max: float = 20.0,
+    noise_root=None,
+    noise_paths: Optional[list[Path]] = None,
+    eps: float = 1e-8,
+):
+    if kind == "noise":
+        return AdditiveNoise(
+            sample_rate=sample_rate,
+            noise_root=noise_root,
+            prob=prob,
+            snr_min=snr_min,
+            snr_max=snr_max,
+            noise_paths=noise_paths,
+            eps=eps)
+    if kind == "white":
+        return WhiteNoise(
+            sample_rate=sample_rate,
+            prob=prob,
+            snr_min=snr_min,
+            snr_max=snr_max,
+            eps=eps)
+    raise ValueError(f"Unsupported waveform augmenter kind: {kind}")
