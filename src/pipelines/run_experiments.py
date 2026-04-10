@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.config import data_config as d
+from src.config import experiment_config as e
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +38,7 @@ class ExperimentSpec:
     snr_max: Optional[float] = None
     train_feature_subdir: Optional[str] = None
     emb_dim: int = 192
+    model_name: str = "conformer"  # conformer, cnn
     margin: float = 0.22
     p: int = 12
     k: int = 5
@@ -44,8 +46,13 @@ class ExperimentSpec:
     weight_decay: float = 1e-4
     epochs: int = 30
     dropout: float = 0.3
+    conformer_d_model: int = 144
+    conformer_num_heads: int = 4
+    conformer_ff_mult: int = 4
+    conformer_conv_kernel_size: int = 15
+    conformer_num_blocks: int = 2
     verify_splits: tuple[str, ...] = DEFAULT_VERIFY_SPLITS
-    verify_checkpoint_types: tuple[str, ...] = ("best",)
+    verify_checkpoint_types: tuple[str, ...] = ("best",)  # best, last
     global_summary_name: str = "verify_summary_new.csv"
     save_verify_artifacts: bool = False
     run_train: bool = True
@@ -53,9 +60,25 @@ class ExperimentSpec:
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     "1": ExperimentSpec(
+        name="conf_baseline",
+        run_name="conf_baseline",
+        train_feature_mode="clean",
+        verify_splits=DEFAULT_VERIFY_SPLITS,
+    ),
+    "2": ExperimentSpec(
+        name="conf_clean+esc50_snr20+white25",
+        run_name="conf_clean+esc50_snr20+white25  0.5 0.3 0.2",
+        train_feature_mode="clean|noise|white",
+        train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
+        train_augments=(
+            ("noise", "train_noise", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
+        verify_splits=DEFAULT_VERIFY_SPLITS,
+    ),
+    "3": ExperimentSpec(
         name="clean+esc50_snr20",
         run_name="clean+esc50_snr20  0.5 0.5",
-        train_feature_mode="clean+noise+white",
+        train_feature_mode="clean|noise|white",
         train_feature_probabilities={"clean": 0.5, "noise": 0.5, "white": 0.0},
         train_augments=(
             ("noise", "train_noise", 1.0, 20.0, 20.0),
@@ -123,7 +146,7 @@ def run_python_code(code: str) -> subprocess.CompletedProcess:
 
 
 def get_last_checkpoint_path(spec: ExperimentSpec) -> Path:
-    return PROJECT_ROOT / "runs" / spec.run_name / "checkpoints" / "last.pt"
+    return Path(e.RUNS_DIR) / spec.run_name / "checkpoints" / "last.pt"
 
 
 def infer_train_augment_kind(spec: ExperimentSpec) -> Optional[str]:
@@ -339,7 +362,13 @@ t.LEARNING_RATE = {spec.lr!r}
 t.WEIGHT_DECAY = {spec.weight_decay!r}
 
 m.EMB_DIM = {spec.emb_dim!r}
+m.MODEL_NAME = {spec.model_name!r}
 m.DROPOUT = {spec.dropout!r}
+m.CONFORMER_D_MODEL = {spec.conformer_d_model!r}
+m.CONFORMER_NUM_HEADS = {spec.conformer_num_heads!r}
+m.CONFORMER_FF_MULT = {spec.conformer_ff_mult!r}
+m.CONFORMER_CONV_KERNEL_SIZE = {spec.conformer_conv_kernel_size!r}
+m.CONFORMER_NUM_BLOCKS = {spec.conformer_num_blocks!r}
 
 import src.pipelines.train as train_mod
 try:
@@ -361,7 +390,7 @@ from src.config import data_config as d
 from src.config import experiment_config as e
 from src.config import feature_config as f
 from src.config import model_config as m
-from src.models.model import CNN1DNET
+from src.models.model import build_embedding_model
 from src.pipelines import verify as verify_mod
 
 e.EXP_NAME = {spec.run_name!r}
@@ -373,7 +402,13 @@ e.BEST_MODEL_PATH = e.CKPT_DIR / "best.pt"
 e.LAST_MODEL_PATH = e.CKPT_DIR / "last.pt"
 
 m.EMB_DIM = {spec.emb_dim!r}
+m.MODEL_NAME = {spec.model_name!r}
 m.DROPOUT = {spec.dropout!r}
+m.CONFORMER_D_MODEL = {spec.conformer_d_model!r}
+m.CONFORMER_NUM_HEADS = {spec.conformer_num_heads!r}
+m.CONFORMER_FF_MULT = {spec.conformer_ff_mult!r}
+m.CONFORMER_CONV_KERNEL_SIZE = {spec.conformer_conv_kernel_size!r}
+m.CONFORMER_NUM_BLOCKS = {spec.conformer_num_blocks!r}
 train_feature_overrides = {get_train_feature_overrides(spec)!r}
 if "noise" in train_feature_overrides:
     d.TRAIN_NOISE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / train_feature_overrides["noise"]
@@ -383,7 +418,11 @@ if "white" in train_feature_overrides:
 run_root = Path(e.RUNS_DIR) / e.EXP_NAME
 verify_dir = run_root / "results" / "verify"
 per_run_csv = verify_dir / "metrics_summary.csv"
-global_csv = Path(e.RUNS_DIR) / {spec.global_summary_name!r}
+global_csv_paths = verify_mod.get_global_summary_paths(
+    runs_dir=Path(e.RUNS_DIR),
+    primary_summary_name={spec.global_summary_name!r},
+    model_name=m.MODEL_NAME,
+)
 selected_splits = set({list(spec.verify_splits)!r})
 checkpoint_types = {list(spec.verify_checkpoint_types)!r}
 
@@ -394,10 +433,16 @@ for checkpoint_type in checkpoint_types:
     ckpt_path = verify_mod.resolve_checkpoint_path(run_root, checkpoint_type)
     ckpt = torch.load(ckpt_path, map_location=device)
 
-    model = CNN1DNET(
+    model = build_embedding_model(
+        m.MODEL_NAME,
         n_feats=f.N_MELS,
         emb_dim=m.EMB_DIM,
         dropout=m.DROPOUT,
+        conformer_d_model=m.CONFORMER_D_MODEL,
+        conformer_num_heads=m.CONFORMER_NUM_HEADS,
+        conformer_ff_mult=m.CONFORMER_FF_MULT,
+        conformer_conv_kernel_size=m.CONFORMER_CONV_KERNEL_SIZE,
+        conformer_num_blocks=m.CONFORMER_NUM_BLOCKS,
     ).to(device)
     verify_mod.load_checkpoint_into_model(model, ckpt["model_state_dict"])
 
@@ -419,10 +464,12 @@ for checkpoint_type in checkpoint_types:
         rows.append(row)
 
 verify_mod.upsert_metrics_rows(per_run_csv, rows)
-verify_mod.upsert_metrics_rows(global_csv, rows)
+for global_csv in global_csv_paths:
+    verify_mod.upsert_metrics_rows(global_csv, rows)
 
 print(f"Per-run summary saved to: {{per_run_csv}}")
-print(f"Global summary updated at: {{global_csv}}")
+for global_csv in global_csv_paths:
+    print(f"Global summary updated at: {{global_csv}}")
 """
     return run_python_code(code)
 
