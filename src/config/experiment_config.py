@@ -4,7 +4,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 EXP_NAME = ""
 
-RUNS_DIR = PROJECT_ROOT / "runs"
+RUNS_DIR = PROJECT_ROOT / "runs_conformer"
 EXP_DIR = RUNS_DIR / EXP_NAME
 
 TB_DIR = EXP_DIR / "tensorboard"
