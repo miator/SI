@@ -1,29 +1,35 @@
 from pathlib import Path
 from typing import Optional, Union
 
-TRAIN_ROOT = r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\wav\train"
-VAL_ROOT = r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\wav\val"
-TEST_ROOT = r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\wav\test"
+# base folders on RunPod
+WORKSPACE_ROOT = Path("/workspace")
+DATA_ROOT = WORKSPACE_ROOT / "data"
 
-PRECOMPUTED_ROOT = Path(
-    r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech_standardized_chunks_3s\logmel_cache"
-)
+# wav split tree that you must upload
+WAV_ROOT = DATA_ROOT / "wav"
+TRAIN_ROOT = WAV_ROOT / "train"
+VAL_ROOT = WAV_ROOT / "val"
+TEST_ROOT = WAV_ROOT / "test"
 
-ESC50_NOISE_ROOT = Path(
-    r"C:\Users\User\Desktop\Data\ESC-50-master-noise\audio_standardized_16k"
-)
+# precomputed cache root that you will upload
+PRECOMPUTED_ROOT = DATA_ROOT / "logmel_cache"
+
+# optional: only needed for precompute / on-the-fly noise creation
+ESC50_NOISE_ROOT = DATA_ROOT / "esc50_audio_standardized_16k"
 ESC50_TRAIN_NOISE_ROOT = ESC50_NOISE_ROOT / "train-noise"
 ESC50_VAL_NOISE_ROOT = ESC50_NOISE_ROOT / "val-noise"
 ESC50_TEST_NOISE_ROOT = ESC50_NOISE_ROOT / "test-noise"
 
 TRAIN_CLEAN_FEAT_ROOT = PRECOMPUTED_ROOT / "train"
-TRAIN_NOISE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_noise"  # esc50_snr20
+TRAIN_NOISE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_noise"
 TRAIN_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_white"
+
 VAL_FEAT_ROOT = PRECOMPUTED_ROOT / "val"
-VAL_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "val_noise"  # esc50_snr20
+VAL_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "val_noise"
 VAL_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "val_white_snr20"
+
 TEST_FEAT_ROOT = PRECOMPUTED_ROOT / "test"
-TEST_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noise"  # esc50_snr20
+TEST_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noise"
 TEST_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "test_white_snr20"
 
 USE_PRECOMPUTED_FEATURES = True
@@ -131,7 +137,8 @@ def get_train_feat_root(key: str) -> Path:
 def get_train_feat_roots(train_feature_mode: Optional[str] = None):
     return [
         get_train_feat_root(key)
-        for key in get_train_feature_root_keys(train_feature_mode)]
+        for key in get_train_feature_root_keys(train_feature_mode)
+    ]
 
 
 def get_train_feature_probabilities(
