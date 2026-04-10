@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 import torchaudio
 
 PathLike = Union[str, Path]
+FeatureRootLike = Union[PathLike, Sequence[PathLike]]
 
 
 @dataclass(frozen=True)
@@ -252,7 +253,7 @@ class PrecomputedFeatureDataset(Dataset):
         self,
         utterances: Sequence[Utterance],
         split_root: PathLike,
-        feat_root: PathLike,
+        feat_root: FeatureRootLike,
     ):
         self.split_root = Path(split_root)
         self.feat_roots = _resolve_feature_roots(feat_root)
