@@ -22,7 +22,7 @@ from src.config import model_config as m
 from src.config import train_config as t
 
 from src.data.features import LogMelExtraction
-from src.models.model import CNN1DNET
+from src.models.model import build_embedding_model
 from src.metrics import compute_roc_auc_eer
 
 import warnings
@@ -121,6 +121,18 @@ def upsert_metrics_rows(csv_path: Path, rows: Iterable[dict]):
         writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDNAMES)
         writer.writeheader()
         writer.writerows(sanitized_rows)
+
+
+def get_global_summary_paths(
+    *,
+    runs_dir: Path,
+    primary_summary_name: str,
+    model_name: str,
+) -> list[Path]:
+    paths = [runs_dir / primary_summary_name]
+    if model_name.lower() == "conformer":
+        paths.append(runs_dir / "verify_summary_conformer.csv")
+    return paths
 
 
 def build_metrics_row(
@@ -415,18 +427,27 @@ def main():
     experiment_name = run_root.name
     verify_dir = run_root / "results" / "verify"
     per_run_csv = verify_dir / "metrics_summary.csv"
-    global_summary_name = "verify_summary_new.csv"
-    global_csv = Path(e.RUNS_DIR) / global_summary_name
+    global_csv_paths = get_global_summary_paths(
+        runs_dir=Path(e.RUNS_DIR),
+        primary_summary_name="verify_summary_new.csv",
+        model_name=m.MODEL_NAME,
+    )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     ckpt_path = resolve_checkpoint_path(run_root, checkpoint_type)
     ckpt = torch.load(ckpt_path, map_location=device)
 
-    model = CNN1DNET(
+    model = build_embedding_model(
+        m.MODEL_NAME,
         n_feats=f.N_MELS,
         emb_dim=emb_dim,
-        dropout=m.DROPOUT
+        dropout=m.DROPOUT,
+        conformer_d_model=m.CONFORMER_D_MODEL,
+        conformer_num_heads=m.CONFORMER_NUM_HEADS,
+        conformer_ff_mult=m.CONFORMER_FF_MULT,
+        conformer_conv_kernel_size=m.CONFORMER_CONV_KERNEL_SIZE,
+        conformer_num_blocks=m.CONFORMER_NUM_BLOCKS,
     ).to(device)
 
     load_checkpoint_into_model(model, ckpt["model_state_dict"])
@@ -452,10 +473,12 @@ def main():
         rows.append(row)
 
     upsert_metrics_rows(per_run_csv, rows)
-    upsert_metrics_rows(global_csv, rows)
+    for global_csv in global_csv_paths:
+        upsert_metrics_rows(global_csv, rows)
 
     print(f"\nPer-run summary saved to: {per_run_csv}")
-    print(f"Global summary updated at: {global_csv}")
+    for global_csv in global_csv_paths:
+        print(f"Global summary updated at: {global_csv}")
 
 
 if __name__ == "__main__":
