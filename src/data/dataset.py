@@ -120,6 +120,62 @@ def _resolve_feature_roots(feat_root) -> list[Path]:
     return feat_roots
 
 
+def _resolve_named_feature_roots(feature_roots) -> list[tuple[str, Path]]:
+    if isinstance(feature_roots, dict):
+        items = list(feature_roots.items())
+    elif isinstance(feature_roots, (str, Path)):
+        root = Path(feature_roots)
+        items = [(root.name or "default", root)]
+    else:
+        items = []
+        for idx, item in enumerate(feature_roots):
+            if isinstance(item, tuple) and len(item) == 2:
+                name, root = item
+            else:
+                root = item
+                name = Path(root).name or f"root_{idx}"
+            items.append((str(name), Path(root)))
+
+    if not items:
+        raise ValueError("feature_roots must contain at least one feature root")
+
+    seen_names = set()
+    resolved: list[tuple[str, Path]] = []
+    for name, root in items:
+        if name in seen_names:
+            raise ValueError(f"Duplicate feature root name: {name}")
+        seen_names.add(name)
+        resolved.append((name, Path(root)))
+
+    return resolved
+
+
+def _resolve_feature_probabilities(root_names: Sequence[str], probabilities=None) -> list[float]:
+    if probabilities is None:
+        return [1.0] * len(root_names)
+
+    if isinstance(probabilities, dict):
+        unknown = sorted(set(probabilities) - set(root_names))
+        if unknown:
+            raise ValueError(f"Unknown probability keys: {unknown}")
+        resolved = [float(probabilities.get(name, 0.0)) for name in root_names]
+    else:
+        resolved = [float(prob) for prob in probabilities]
+        if len(resolved) != len(root_names):
+            raise ValueError(
+                "Probabilities length must match the number of feature roots"
+            )
+
+    if any(prob < 0 for prob in resolved):
+        raise ValueError("Probabilities must be non-negative")
+
+    total = sum(resolved)
+    if total <= 0:
+        raise ValueError("Probabilities must sum to a value greater than zero")
+
+    return resolved
+
+
 class AudioDataset(Dataset):
     """
     Returns:
@@ -228,5 +284,73 @@ class PrecomputedFeatureDataset(Dataset):
         feat_path = self.feat_roots[root_idx] / self.rel_feature_paths[sample_idx]
         feat = load_feature_tensor(feat_path)
         label = torch.tensor(self.labels[sample_idx], dtype=torch.long)
+
+        return feat, label
+
+
+class RandomChoicePrecomputedFeatureDataset(Dataset):
+    """
+    Returns:
+        feat: (frames, n_feats)
+        label: scalar torch.long 64bit int
+
+    Expects .pt tensors already saved on disk.
+    Keeps dataset length equal to the number of base utterances and
+    randomly selects one enabled feature root per sample access.
+    """
+    def __init__(
+        self,
+        utterances: Sequence[Utterance],
+        split_root: PathLike,
+        feature_roots,
+        probabilities=None,
+    ):
+        self.split_root = Path(split_root)
+
+        named_feature_roots = _resolve_named_feature_roots(feature_roots)
+        root_names = [name for name, _root in named_feature_roots]
+        root_probabilities = _resolve_feature_probabilities(root_names, probabilities)
+
+        enabled_feature_roots: list[tuple[str, Path]] = []
+        enabled_probabilities: list[float] = []
+        for (name, root), probability in zip(named_feature_roots, root_probabilities):
+            if probability <= 0:
+                continue
+            if not root.exists():
+                raise FileNotFoundError(f"Missing enabled feature root: {root}")
+            enabled_feature_roots.append((name, root))
+            enabled_probabilities.append(probability)
+
+        if not enabled_feature_roots:
+            raise ValueError("At least one feature root must have a probability greater than zero")
+
+        self.feature_root_names = [name for name, _root in enabled_feature_roots]
+        self.feat_roots = [root for _name, root in enabled_feature_roots]
+        self.root_probabilities = torch.tensor(enabled_probabilities, dtype=torch.float32)
+        self.root_probabilities /= self.root_probabilities.sum()
+
+        self.utterance_paths: list[Path] = []
+        self.labels: list[int] = []
+
+        for utterance in utterances:
+            label = _require_numeric_label(utterance, "RandomChoicePrecomputedFeatureDataset")
+            self.utterance_paths.append(utterance.path)
+            self.labels.append(label)
+
+            for root in self.feat_roots:
+                feat_path = wav_path_to_feature_path(utterance.path, self.split_root, root)
+                if not feat_path.exists():
+                    raise FileNotFoundError(f"Missing precomputed feature file: {feat_path}")
+
+    def __len__(self) -> int:
+        return len(self.utterance_paths)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        utterance_path = self.utterance_paths[idx]
+        root_idx = int(torch.multinomial(self.root_probabilities, num_samples=1).item())
+
+        feat_path = wav_path_to_feature_path(utterance_path, self.split_root, self.feat_roots[root_idx])
+        feat = load_feature_tensor(feat_path)
+        label = torch.tensor(self.labels[idx], dtype=torch.long)
 
         return feat, label
