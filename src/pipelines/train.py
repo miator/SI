@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 from functools import partial
 import warnings
+import json
 
 import torch
 from torch.utils.data import DataLoader
@@ -29,6 +30,36 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
 torch.set_num_threads(4)
 # torch.set_num_interop_threads(1)
+
+
+class CollapsedTrainingError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        run_name: str,
+        epoch: int,
+        train_loss: float,
+        val_loss: float,
+        margin: float,
+    ) -> None:
+        super().__init__("early abort: loss collapsed near margin")
+        self.run_name = run_name
+        self.epoch = epoch
+        self.train_loss = train_loss
+        self.val_loss = val_loss
+        self.margin = margin
+
+
+def _emit_collapse_status(exc: CollapsedTrainingError) -> None:
+    print(json.dumps(
+            {"status": "collapsed",
+             "run_name": exc.run_name,
+             "epoch": exc.epoch,
+             "train_loss": exc.train_loss,
+             "val_loss": exc.val_loss,
+             "margin": exc.margin}
+        )
+    )
 
 
 def _labels_for_sampler(dataset, base_utterances) -> list[int]:
@@ -92,6 +123,9 @@ def main():
     ckpt_dir = run_root / "checkpoints"
     best_model_path = ckpt_dir / "best.pt"
     last_model_path = ckpt_dir / "last.pt"
+    collapse_patience = 2
+    collapse_tolerance = 5e-4
+    collapse_require_train_and_val = True
 
     tb_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -219,69 +253,92 @@ def main():
     min_delta = 1e-4
     best_val_loss = float("inf")
     bad_epochs = 0
+    collapsed_epochs = 0
 
     # ---- TRAIN LOOP ----
-    for epoch in range(epochs):
-        start = time.perf_counter()
+    try:
+        for epoch in range(epochs):
+            start = time.perf_counter()
 
-        tr_loss = run_epoch_batchhard(
-            model,
-            train_loader,
-            triplet_loss,
-            optimizer,
-            device,
-            train=True,
-            desc=f"train {epoch + 1}/{epochs}")
-        va_loss = run_epoch_batchhard(
-            model,
-            val_loader,
-            triplet_loss,
-            optimizer,
-            device,
-            train=False,
-            desc=f"val {epoch + 1}/{epochs}")
+            tr_loss = run_epoch_batchhard(
+                model,
+                train_loader,
+                triplet_loss,
+                optimizer,
+                device,
+                train=True,
+                desc=f"train {epoch + 1}/{epochs}")
+            va_loss = run_epoch_batchhard(
+                model,
+                val_loader,
+                triplet_loss,
+                optimizer,
+                device,
+                train=False,
+                desc=f"val {epoch + 1}/{epochs}")
 
-        elapsed = time.perf_counter() - start
-        current_lr = optimizer.param_groups[0]["lr"]
+            elapsed = time.perf_counter() - start
+            current_lr = optimizer.param_groups[0]["lr"]
 
-        writer.add_scalar("loss/train", tr_loss, epoch + 1)
-        writer.add_scalar("loss/val", va_loss, epoch + 1)
-        writer.add_scalar("lr", current_lr, epoch + 1)
-        writer.add_scalar("time/epoch_sec", elapsed, epoch + 1)
+            writer.add_scalar("loss/train", tr_loss, epoch + 1)
+            writer.add_scalar("loss/val", va_loss, epoch + 1)
+            writer.add_scalar("lr", current_lr, epoch + 1)
+            writer.add_scalar("time/epoch_sec", elapsed, epoch + 1)
 
-        save_checkpoint(
-            last_model_path,
-            model=model,
-            optimizer=optimizer,
-            epoch=epoch + 1,
-            best_val_loss=best_val_loss)
-
-        improved = va_loss < best_val_loss - min_delta
-        if improved:
-            best_val_loss = va_loss
-            bad_epochs = 0
             save_checkpoint(
-                best_model_path,
+                last_model_path,
                 model=model,
                 optimizer=optimizer,
                 epoch=epoch + 1,
                 best_val_loss=best_val_loss)
-        else:
-            bad_epochs += 1
 
-        print(
-            f"epoch {epoch + 1}/{epochs} | "
-            f"train triplet loss {tr_loss:.4f} | "
-            f"val triplet loss {va_loss:.4f} | "
-            f"lr {current_lr:.6f} | "
-            f"time {elapsed:.2f}s")
+            improved = va_loss < best_val_loss - min_delta
+            if improved:
+                best_val_loss = va_loss
+                bad_epochs = 0
+                save_checkpoint(
+                    best_model_path,
+                    model=model,
+                    optimizer=optimizer,
+                    epoch=epoch + 1,
+                    best_val_loss=best_val_loss)
+            else:
+                bad_epochs += 1
 
-        if bad_epochs >= patience:
-            print(f"early stop at epoch {epoch + 1}")
-            break
+            print(
+                f"epoch {epoch + 1}/{epochs} | "
+                f"train triplet loss {tr_loss:.4f} | "
+                f"val triplet loss {va_loss:.4f} | "
+                f"lr {current_lr:.6f} | "
+                f"time {elapsed:.2f}s")
 
-    writer.close()
+            train_near_margin = abs(tr_loss - margin) <= collapse_tolerance
+            val_near_margin = abs(va_loss - margin) <= collapse_tolerance
+            is_collapsed_epoch = (
+                train_near_margin and val_near_margin
+                if collapse_require_train_and_val
+                else val_near_margin)
+            collapsed_epochs = collapsed_epochs + 1 if is_collapsed_epoch else 0
+
+            if collapsed_epochs >= collapse_patience:
+                print("early abort: loss collapsed near margin")
+                raise CollapsedTrainingError(
+                    run_name=run_name,
+                    epoch=epoch + 1,
+                    train_loss=tr_loss,
+                    val_loss=va_loss,
+                    margin=margin)
+
+            if bad_epochs >= patience:
+                print(f"early stop at epoch {epoch + 1}")
+                break
+    finally:
+        writer.close()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except CollapsedTrainingError as exc:
+        _emit_collapse_status(exc)
+        raise SystemExit(42) from exc
