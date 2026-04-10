@@ -29,6 +29,7 @@ class ExperimentSpec:
     name: str
     run_name: str
     train_feature_mode: Optional[str] = None
+    train_feature_probabilities: Optional[dict[str, float]] = None
     train_augments: tuple[tuple[str, str, float, float, float], ...] = ()
     train_augment_kind: Optional[str] = None
     noise_prob: float = 1.0
@@ -52,49 +53,15 @@ class ExperimentSpec:
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     "1": ExperimentSpec(
-        name="clean+esc50_snr20+white_snr20",
-        run_name="clean+esc50_snr20+white_snr20",
-        run_train=False
+        name="clean+esc50_snr20",
+        run_name="clean+esc50_snr20  0.5 0.5",
+        train_feature_mode="clean+noise+white",
+        train_feature_probabilities={"clean": 0.5, "noise": 0.5, "white": 0.0},
+        train_augments=(
+            ("noise", "train_noise", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
+        verify_splits=DEFAULT_VERIFY_SPLITS,
     ),
-    "2": ExperimentSpec(
-        name="clean+esc50_snr20+white_snr10_20",
-        run_name="clean+esc50_snr20+white_snr10_20",
-        run_train=False
-    ),
-    # "3": ExperimentSpec(
-    #     name="clean+esc50_snr20+white_snr25",
-    #     run_name="clean+esc50_snr20+white_snr25",
-    #     train_feature_mode="clean+noise+white",
-    #     train_augments=(
-    #         ("noise", "train_noise", 1.0, 20.0, 20.0),
-    #         ("white", "train_white_snr25", 1.0, 25.0, 25.0),
-    #     ),
-    # ),
-    # "4": ExperimentSpec(
-    #     name="clean+esc50_snr20+white_snr20_30",
-    #     run_name="clean+esc50_snr20+white_snr20_30",
-    #     train_feature_mode="clean+noise+white",
-    #     train_augments=(
-    #         ("noise", "train_noise", 1.0, 20.0, 20.0),
-    #         ("white", "train_white_snr20_30", 1.0, 20.0, 30.0),
-    #     ),
-    # ),
-    # "5": ExperimentSpec(
-    #     name="clean+white_snr25",
-    #     run_name="clean+white_snr25",
-    #     train_feature_mode="clean+white",
-    #     train_augments=(
-    #         ("white", "train_white_snr25", 1.0, 25.0, 25.0),
-    #     ),
-    # ),
-    # "6": ExperimentSpec(
-    #     name="clean+white_snr20_30",
-    #     run_name="clean+white_snr20_30",
-    #     train_feature_mode="clean+white",
-    #     train_augments=(
-    #         ("white", "train_white_snr20_30", 1.0, 20.0, 30.0),
-    #     ),
-    # ),
 }
 
 
@@ -357,6 +324,7 @@ e.BEST_MODEL_PATH = e.CKPT_DIR / "best.pt"
 e.LAST_MODEL_PATH = e.CKPT_DIR / "last.pt"
 
 d.TRAIN_FEATURE_MODE = {spec.train_feature_mode!r}
+d.TRAIN_FEATURE_PROBABILITIES = {spec.train_feature_probabilities!r}
 train_feature_overrides = {get_train_feature_overrides(spec)!r}
 if "noise" in train_feature_overrides:
     d.TRAIN_NOISE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / train_feature_overrides["noise"]
