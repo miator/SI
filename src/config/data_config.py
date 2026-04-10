@@ -31,6 +31,11 @@ TRAIN_FEATURE_MODE = "clean"
 TRAIN_FEATURE_PROBABILITIES: Optional[dict[str, float]] = None
 
 
+def is_probabilistic_train_feature_mode(train_feature_mode: Optional[str] = None) -> bool:
+    mode = TRAIN_FEATURE_MODE if train_feature_mode is None else train_feature_mode
+    return "|" in mode
+
+
 def get_eval_split_definitions() -> dict[str, dict[str, Union[Path, float, bool, None, str]]]:
     return {
         "val": {
@@ -86,6 +91,16 @@ def get_eval_split_definitions() -> dict[str, dict[str, Union[Path, float, bool,
 
 def get_train_feature_root_keys(train_feature_mode: Optional[str] = None) -> tuple[str, ...]:
     mode = TRAIN_FEATURE_MODE if train_feature_mode is None else train_feature_mode
+
+    if mode == "clean|noise":
+        return "clean", "noise"
+    if mode == "clean|white":
+        return "clean", "white"
+    if mode == "noise|white":
+        return "noise", "white"
+    if mode in {"clean|noise|white", "random_all"}:
+        return "clean", "noise", "white"
+
     if mode == "clean":
         return "clean",
     if mode == "noise":
