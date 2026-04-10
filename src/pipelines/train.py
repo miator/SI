@@ -23,7 +23,7 @@ from src.data.dataset import (
     build_label_map,
     attach_labels)
 from src.data.features import LogMelExtraction
-from src.models.model import CNN1DNET
+from src.models.model import build_embedding_model
 from src.models.triplet import BatchHardTripletLoss
 from src.models.samplers import PKSampler
 
@@ -148,22 +148,35 @@ def main():
         f"epochs={epochs} | lr={lr} | wd={weight_decay} | dropout={m.DROPOUT}")
     print("=" * 100)
 
+    train_feature_probabilities = None
+
     if d.USE_PRECOMPUTED_FEATURES:
         train_feature_keys = d.get_train_feature_root_keys(train_feature_mode)
         train_feature_roots = {
             key: d.get_train_feat_root(key)
             for key in train_feature_keys
         }
-        train_feature_probabilities = d.get_train_feature_probabilities(train_feature_mode)
         train_feat_str = ",".join(
             f"{key}:{root}"
             for key, root in train_feature_roots.items()
         )
-        train_ds = RandomChoicePrecomputedFeatureDataset(
-            train_utts,
-            split_root=d.TRAIN_ROOT,
-            feature_roots=train_feature_roots,
-            probabilities=train_feature_probabilities)
+        if d.is_probabilistic_train_feature_mode(train_feature_mode):
+            train_feature_probabilities = d.get_train_feature_probabilities(train_feature_mode)
+            train_ds = RandomChoicePrecomputedFeatureDataset(
+                train_utts,
+                split_root=d.TRAIN_ROOT,
+                feature_roots=train_feature_roots,
+                probabilities=train_feature_probabilities)
+        else:
+            if d.TRAIN_FEATURE_PROBABILITIES is not None:
+                raise ValueError(
+                    "TRAIN_FEATURE_PROBABILITIES can only be used with probabilistic "
+                    "train feature modes such as 'clean|noise' or 'clean|noise|white'."
+                )
+            train_ds = PrecomputedFeatureDataset(
+                train_utts,
+                split_root=d.TRAIN_ROOT,
+                feat_root=list(train_feature_roots.values()))
         val_ds = PrecomputedFeatureDataset(
             val_utts,
             split_root=d.VAL_ROOT,
@@ -220,10 +233,16 @@ def main():
         persistent_workers=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = CNN1DNET(
+    model = build_embedding_model(
+        m.MODEL_NAME,
         n_feats=f.N_MELS,
         emb_dim=emb_dim,
         dropout=m.DROPOUT,
+        conformer_d_model=m.CONFORMER_D_MODEL,
+        conformer_num_heads=m.CONFORMER_NUM_HEADS,
+        conformer_ff_mult=m.CONFORMER_FF_MULT,
+        conformer_conv_kernel_size=m.CONFORMER_CONV_KERNEL_SIZE,
+        conformer_num_blocks=m.CONFORMER_NUM_BLOCKS,
     ).to(device)
 
     triplet_loss = BatchHardTripletLoss(margin=margin, normalize=False)  # model return normalized embeddings
@@ -244,6 +263,7 @@ def main():
                 f"n_mels={f.N_MELS}",
                 f"max_frames={f.MAX_FRAMES}",
                 f"emb_dim={emb_dim}",
+                f"model_name={m.MODEL_NAME}",
                 f"margin={margin}",
                 f"P={p}",
                 f"K={k}",
@@ -252,6 +272,11 @@ def main():
                 f"lr={lr}",
                 f"weight_decay={weight_decay}",
                 f"dropout={m.DROPOUT}",
+                f"conformer_d_model={m.CONFORMER_D_MODEL}",
+                f"conformer_num_heads={m.CONFORMER_NUM_HEADS}",
+                f"conformer_ff_mult={m.CONFORMER_FF_MULT}",
+                f"conformer_conv_kernel_size={m.CONFORMER_CONV_KERNEL_SIZE}",
+                f"conformer_num_blocks={m.CONFORMER_NUM_BLOCKS}",
                 f"train_feature_mode={train_feature_mode}",
                 f"train_feat_roots={train_feat_str}",
                 f"train_feature_probabilities={train_feature_probabilities}",
