@@ -17,55 +17,102 @@ ESC50_VAL_NOISE_ROOT = ESC50_NOISE_ROOT / "val-noise"
 ESC50_TEST_NOISE_ROOT = ESC50_NOISE_ROOT / "test-noise"
 
 TRAIN_CLEAN_FEAT_ROOT = PRECOMPUTED_ROOT / "train"
-TRAIN_NOISE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_noise"
+TRAIN_NOISE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_noise"  # esc50_snr20
+TRAIN_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_white"
 VAL_FEAT_ROOT = PRECOMPUTED_ROOT / "val"
-VAL_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "val_noise"
+VAL_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "val_noise"  # esc50_snr20
+VAL_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "val_white_snr20"
 TEST_FEAT_ROOT = PRECOMPUTED_ROOT / "test"
-TEST_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noise"
+TEST_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noise"  # esc50_snr20
+TEST_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "test_white_snr20"
 
 USE_PRECOMPUTED_FEATURES = True
 TRAIN_FEATURE_MODE = "clean"
 
 
-def get_eval_split_definitions() -> dict[str, dict[str, Union[Path, float, bool, None]]]:
+def get_eval_split_definitions() -> dict[str, dict[str, Union[Path, float, bool, None, str]]]:
     return {
         "val": {
             "wav_root": Path(VAL_ROOT),
             "feat_root": VAL_FEAT_ROOT,
+            "augment_kind": None,
             "noise_root": None,
             "snr": None,
             "is_noisy": False,
         },
-        "val_noisy": {
+        "val_noise": {
             "wav_root": Path(VAL_ROOT),
             "feat_root": VAL_NOISY_FEAT_ROOT,
+            "augment_kind": "noise",
             "noise_root": ESC50_VAL_NOISE_ROOT,
+            "snr": 20.0,
+            "is_noisy": True,
+        },
+        "val_white": {
+            "wav_root": Path(VAL_ROOT),
+            "feat_root": VAL_WHITE_FEAT_ROOT,
+            "augment_kind": "white",
+            "noise_root": None,
             "snr": 20.0,
             "is_noisy": True,
         },
         "test": {
             "wav_root": Path(TEST_ROOT),
             "feat_root": TEST_FEAT_ROOT,
+            "augment_kind": None,
             "noise_root": None,
             "snr": None,
             "is_noisy": False,
         },
-        "test_noisy": {
+        "test_noise": {
             "wav_root": Path(TEST_ROOT),
             "feat_root": TEST_NOISY_FEAT_ROOT,
+            "augment_kind": "noise",
             "noise_root": ESC50_TEST_NOISE_ROOT,
+            "snr": 20.0,
+            "is_noisy": True,
+        },
+        "test_white": {
+            "wav_root": Path(TEST_ROOT),
+            "feat_root": TEST_WHITE_FEAT_ROOT,
+            "augment_kind": "white",
+            "noise_root": None,
             "snr": 20.0,
             "is_noisy": True,
         },
     }
 
 
-def get_train_feat_roots(train_feature_mode: Optional[str] = None):
+def get_train_feature_root_keys(train_feature_mode: Optional[str] = None) -> tuple[str, ...]:
     mode = TRAIN_FEATURE_MODE if train_feature_mode is None else train_feature_mode
     if mode == "clean":
-        return [TRAIN_CLEAN_FEAT_ROOT]
+        return "clean",
     if mode == "noise":
-        return [TRAIN_NOISE_FEAT_ROOT]
-    if mode == "both":
-        return [TRAIN_CLEAN_FEAT_ROOT, TRAIN_NOISE_FEAT_ROOT]
+        return "noise",
+    if mode == "white":
+        return "white",
+    if mode in {"clean+noise"}:
+        return "clean", "noise"
+    if mode == "clean+white":
+        return "clean", "white"
+    if mode == "noise+white":
+        return "noise", "white"
+    if mode in {"clean+noise+white", "all"}:
+        return "clean", "noise", "white"
     raise ValueError(f"Unsupported TRAIN_FEATURE_MODE: {mode}")
+
+
+def get_train_feat_root(key: str) -> Path:
+    if key == "clean":
+        return TRAIN_CLEAN_FEAT_ROOT
+    if key == "noise":
+        return TRAIN_NOISE_FEAT_ROOT
+    if key == "white":
+        return TRAIN_WHITE_FEAT_ROOT
+    raise ValueError(f"Unsupported train feature root key: {key}")
+
+
+def get_train_feat_roots(train_feature_mode: Optional[str] = None):
+    return [
+        get_train_feat_root(key)
+        for key in get_train_feature_root_keys(train_feature_mode)]
