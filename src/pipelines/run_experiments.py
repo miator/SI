@@ -8,11 +8,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from src.config import data_config as d
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-COOLDOWN_SECONDS = 10
-DEFAULT_VERIFY_SPLITS = ("val", "val_noisy", "test", "test_noisy")
-NOISY_VERIFY_SPLITS = ("val_noisy", "test_noisy")
+COOLDOWN_SECONDS = 20
+DEFAULT_VERIFY_SPLITS = (
+    "val", "val_noise", "val_white",
+    "test", "test_noise", "test_white")
+NOISY_VERIFY_SPLITS = (
+    "val_noise", "val_white",
+    "test_noise", "test_white")
+WHITE_VERIFY_SPLITS = ("val_white", "test_white")
 CLEAN_VERIFY_SPLITS = ("val", "test")
 
 
@@ -21,9 +28,12 @@ class ExperimentSpec:
     name: str
     run_name: str
     train_feature_mode: Optional[str] = None
-    train_snr_min: Optional[float] = None
-    train_snr_max: Optional[float] = None
-    train_noise_cache_name: Optional[str] = None
+    train_augments: tuple[tuple[str, str, float, float, float], ...] = ()
+    train_augment_kind: Optional[str] = None
+    noise_prob: float = 1.0
+    snr_min: Optional[float] = None
+    snr_max: Optional[float] = None
+    train_feature_subdir: Optional[str] = None
     emb_dim: int = 192
     margin: float = 0.22
     p: int = 12
@@ -40,12 +50,57 @@ class ExperimentSpec:
 
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
-    "run 1": ExperimentSpec(
-        name="run 1",
-        run_name="cnn1d_emb192_m022_P12K5_lr00005",
-        run_train=False,
-        verify_splits=CLEAN_VERIFY_SPLITS,
-        verify_checkpoint_types=("best",),
+    "1": ExperimentSpec(
+        name="clean+esc50_snr20+white_snr20",
+        run_name="clean+esc50_snr20+white_snr20",
+        train_feature_mode="clean+noise+white",
+        train_augments=(
+            ("noise", "train_noise", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr20", 1.0, 20.0, 20.0),
+        ),
+    ),
+    "2": ExperimentSpec(
+        name="clean+esc50_snr20+white_snr10_20",
+        run_name="clean+esc50_snr20+white_snr10_20",
+        train_feature_mode="clean+noise+white",
+        train_augments=(
+            ("noise", "train_noise", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr10_20", 1.0, 10.0, 20.0),
+        ),
+    ),
+    "3": ExperimentSpec(
+        name="clean+esc50_snr20+white_snr25",
+        run_name="clean+esc50_snr20+white_snr25",
+        train_feature_mode="clean+noise+white",
+        train_augments=(
+            ("noise", "train_noise", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+        ),
+    ),
+    "4": ExperimentSpec(
+        name="clean+esc50_snr20+white_snr20_30",
+        run_name="clean+esc50_snr20+white_snr20_30",
+        train_feature_mode="clean+noise+white",
+        train_augments=(
+            ("noise", "train_noise", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr20_30", 1.0, 20.0, 30.0),
+        ),
+    ),
+    "5": ExperimentSpec(
+        name="clean+white_snr25",
+        run_name="clean+white_snr25",
+        train_feature_mode="clean+white",
+        train_augments=(
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+        ),
+    ),
+    "6": ExperimentSpec(
+        name="clean+white_snr20_30",
+        run_name="clean+white_snr20_30",
+        train_feature_mode="clean+white",
+        train_augments=(
+            ("white", "train_white_snr20_30", 1.0, 20.0, 30.0),
+        ),
     ),
 }
 
@@ -111,19 +166,112 @@ def get_last_checkpoint_path(spec: ExperimentSpec) -> Path:
     return PROJECT_ROOT / "runs" / spec.run_name / "checkpoints" / "last.pt"
 
 
+def infer_train_augment_kind(spec: ExperimentSpec) -> Optional[str]:
+    if spec.train_augment_kind is not None:
+        return spec.train_augment_kind
+
+    mode_keys = [key for key in d.get_train_feature_root_keys(spec.train_feature_mode) if key != "clean"]
+    if len(mode_keys) == 1:
+        return mode_keys[0]
+    return None
+
+
+def format_cache_value(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return str(value).replace("-", "m").replace(".", "p")
+
+
+def get_train_feature_subdir(spec: ExperimentSpec) -> Optional[str]:
+    if spec.train_feature_subdir is not None:
+        return spec.train_feature_subdir
+
+    augment_kind = infer_train_augment_kind(spec)
+    if augment_kind is None:
+        return None
+    if spec.snr_min is None or spec.snr_max is None:
+        return f"train_{augment_kind}"
+
+    return (
+        f"train_{augment_kind}_snr"
+        f"{format_cache_value(spec.snr_min)}_{format_cache_value(spec.snr_max)}"
+    )
+
+
+def get_train_feature_overrides(spec: ExperimentSpec) -> dict[str, str]:
+    return {
+        augment_kind: feature_subdir
+        for augment_kind, feature_subdir, _noise_prob, _snr_min, _snr_max in get_train_augments(spec)
+    }
+
+
+def get_train_augments(spec: ExperimentSpec) -> tuple[tuple[str, str, float, float, float], ...]:
+    if spec.train_augments:
+        return spec.train_augments
+
+    augment_kind = infer_train_augment_kind(spec)
+    feature_subdir = get_train_feature_subdir(spec)
+    if (
+        augment_kind is None
+        or feature_subdir is None
+        or spec.snr_min is None
+        or spec.snr_max is None
+    ):
+        return ()
+
+    return (
+        (
+            augment_kind,
+            feature_subdir,
+            spec.noise_prob,
+            spec.snr_min,
+            spec.snr_max,
+        ),
+    )
+
+
+def collect_train_precompute_requests(
+    experiments: list[ExperimentSpec],
+) -> tuple[bool, tuple[tuple[str, str, float, float, float], ...]]:
+    need_train_clean = False
+    train_variants: list[tuple[str, str, float, float, float]] = []
+
+    for spec in experiments:
+        mode_keys = d.get_train_feature_root_keys(spec.train_feature_mode)
+        if "clean" in mode_keys:
+            need_train_clean = True
+
+        for augment_kind, feature_subdir, noise_prob, snr_min, snr_max in get_train_augments(spec):
+            if augment_kind not in mode_keys:
+                raise ValueError(
+                    f"Experiment {spec.name} defines train augment {augment_kind!r} "
+                    f"but train_feature_mode is {spec.train_feature_mode!r}."
+                )
+            train_variants.append(
+                (
+                    augment_kind,
+                    feature_subdir,
+                    noise_prob,
+                    snr_min,
+                    snr_max,
+                )
+            )
+
+    return need_train_clean, tuple(dict.fromkeys(train_variants))
+
+
 def precompute_feature_sets(
     *,
     overwrite: bool,
     need_train_clean: bool,
-    train_noise_variants: tuple[tuple[str, float, float], ...],
-    need_noisy_eval: bool,
+    train_variants: tuple[tuple[str, str, float, float, float], ...],
 ) -> subprocess.CompletedProcess:
     code = f"""
 from pathlib import Path
 
 from src.config import data_config as d
 from src.config import feature_config as f
-from src.data.augment import AdditiveNoise
+from src.data.augment import build_waveform_augmenter
 from src.data.features import LogMelExtraction
 from src.pipelines import precompute_logmels as p
 
@@ -141,8 +289,10 @@ fe = LogMelExtraction(
 for path in (
     d.VAL_FEAT_ROOT,
     d.VAL_NOISY_FEAT_ROOT,
+    d.VAL_WHITE_FEAT_ROOT,
     d.TEST_FEAT_ROOT,
     d.TEST_NOISY_FEAT_ROOT,
+    d.TEST_WHITE_FEAT_ROOT,
 ):
     path.mkdir(parents=True, exist_ok=True)
 
@@ -155,6 +305,7 @@ if {need_train_clean!r}:
         fe=fe,
         overwrite={overwrite!r},
     )
+
 p._precompute_split(
     split_name="val",
     wav_root=Path(d.VAL_ROOT),
@@ -170,27 +321,27 @@ p._precompute_split(
     overwrite={overwrite!r},
 )
 
-for cache_name, snr_min, snr_max in {list(train_noise_variants)!r}:
-    feat_root = Path(d.PRECOMPUTED_ROOT) / cache_name
+for augment_kind, feature_subdir, noise_prob, snr_min, snr_max in {list(train_variants)!r}:
+    feat_root = Path(d.PRECOMPUTED_ROOT) / feature_subdir
     feat_root.mkdir(parents=True, exist_ok=True)
-    train_augmenter = AdditiveNoise(
+    augmenter = build_waveform_augmenter(
+        kind=augment_kind,
         sample_rate=f.SAMPLE_RATE,
-        noise_root=d.ESC50_TRAIN_NOISE_ROOT,
-        prob=1.0,
+        noise_root=d.ESC50_TRAIN_NOISE_ROOT if augment_kind == "noise" else None,
+        prob=noise_prob,
         snr_min=snr_min,
         snr_max=snr_max,
     )
     p._precompute_split(
-        split_name=f"train_noise:{{cache_name}}",
+        split_name=f"train_{{augment_kind}}:{{feature_subdir}}",
         wav_root=Path(d.TRAIN_ROOT),
         feat_root=feat_root,
         fe=fe,
-        augmenter=train_augmenter,
+        augmenter=augmenter,
         overwrite={overwrite!r},
     )
 
-if {need_noisy_eval!r}:
-    p._precompute_noisy_eval_splits(fe, overwrite={overwrite!r})
+p._precompute_augmented_eval_splits(fe, overwrite={overwrite!r})
 """
     return run_python_code(code)
 
@@ -213,8 +364,11 @@ e.BEST_MODEL_PATH = e.CKPT_DIR / "best.pt"
 e.LAST_MODEL_PATH = e.CKPT_DIR / "last.pt"
 
 d.TRAIN_FEATURE_MODE = {spec.train_feature_mode!r}
-if {spec.train_noise_cache_name!r} is not None:
-    d.TRAIN_NOISE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / {spec.train_noise_cache_name!r}
+train_feature_overrides = {get_train_feature_overrides(spec)!r}
+if "noise" in train_feature_overrides:
+    d.TRAIN_NOISE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / train_feature_overrides["noise"]
+if "white" in train_feature_overrides:
+    d.TRAIN_WHITE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / train_feature_overrides["white"]
 
 t.MARGIN = {spec.margin!r}
 t.P = {spec.p!r}
@@ -255,8 +409,11 @@ e.LAST_MODEL_PATH = e.CKPT_DIR / "last.pt"
 
 m.EMB_DIM = {spec.emb_dim!r}
 m.DROPOUT = {spec.dropout!r}
-if {spec.train_noise_cache_name!r} is not None:
-    d.TRAIN_NOISE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / {spec.train_noise_cache_name!r}
+train_feature_overrides = {get_train_feature_overrides(spec)!r}
+if "noise" in train_feature_overrides:
+    d.TRAIN_NOISE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / train_feature_overrides["noise"]
+if "white" in train_feature_overrides:
+    d.TRAIN_WHITE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / train_feature_overrides["white"]
 
 run_root = Path(e.RUNS_DIR) / e.EXP_NAME
 verify_dir = run_root / "results" / "verify"
@@ -279,8 +436,7 @@ for checkpoint_type in checkpoint_types:
     ).to(device)
     verify_mod.load_checkpoint_into_model(model, ckpt["model_state_dict"])
 
-    eval_definitions = d.get_eval_split_definitions()
-    for split_name, split_def in eval_definitions.items():
+    for split_name, split_def in d.get_eval_split_definitions().items():
         if split_name not in selected_splits:
             continue
 
@@ -309,36 +465,14 @@ print(f"Global summary updated at: {{global_csv}}")
 def main() -> None:
     args = parse_args()
     experiments = select_experiments(args.experiments)
-    experiments_needing_training = [
+    train_experiments = [
         spec
         for spec in experiments
         if spec.run_train
         and not args.skip_train
         and not get_last_checkpoint_path(spec).exists()
     ]
-    need_train_clean = any(
-        spec.train_feature_mode in {"clean", "both"}
-        for spec in experiments_needing_training
-    )
-    train_noise_variants = tuple(
-        dict.fromkeys(
-            (
-                spec.train_noise_cache_name,
-                spec.train_snr_min,
-                spec.train_snr_max,
-            )
-            for spec in experiments_needing_training
-            if spec.train_feature_mode in {"noise", "both"}
-            and spec.train_noise_cache_name is not None
-            and spec.train_snr_min is not None
-            and spec.train_snr_max is not None
-        )
-    )
-    need_noisy_eval = any(
-        split_name.endswith("_noisy")
-        for spec in experiments
-        for split_name in spec.verify_splits
-    )
+    need_train_clean, train_variants = collect_train_precompute_requests(train_experiments)
 
     if not args.skip_precompute:
         print("=" * 80)
@@ -347,8 +481,7 @@ def main() -> None:
         result = precompute_feature_sets(
             overwrite=args.overwrite_features,
             need_train_clean=need_train_clean,
-            train_noise_variants=train_noise_variants,
-            need_noisy_eval=need_noisy_eval,
+            train_variants=train_variants,
         )
         if result.returncode != 0:
             print("Feature precomputation failed. Stopping.")
