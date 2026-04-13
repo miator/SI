@@ -3,14 +3,14 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "Speaker Identification"
+name = "speaker-identification"
 version = "0.1.0"
 description = ""
 readme = "README.md"
-requires-python = "==3.9"
+requires-python = ">=3.9"
 license = {text = ""}
 authors = [
-  {name = "", email = ""}
+  {name = "Astghik", email = "asvoskerchyan@gmail.com"}
 ]
 
 dependencies = [
