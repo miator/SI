@@ -13,7 +13,7 @@ from src.config import experiment_config as e
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-COOLDOWN_SECONDS = 20
+COOLDOWN_SECONDS = 1
 COLLAPSED_TRAINING_EXIT_CODE = 42
 DEFAULT_VERIFY_SPLITS = (
     "val", "val_noise", "val_white",
