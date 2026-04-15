@@ -71,6 +71,41 @@ def _labels_for_sampler(dataset, base_utterances) -> list[int]:
     return [u.label for u in base_utterances]
 
 
+def _resolve_train_feature_roots(
+    train_feature_mode: str,
+    train_feature_probabilities: dict[str, float] | None,
+):
+    feature_keys = d.get_train_feature_root_keys(train_feature_mode)
+    grouped_feature_roots = {
+        key: d.get_train_feat_roots_for_key(key)
+        for key in feature_keys
+    }
+
+    if d.is_probabilistic_train_feature_mode(train_feature_mode):
+        mode_probabilities = d.get_train_feature_probabilities(
+            train_feature_mode,
+            train_feature_probabilities,
+        )
+        named_feature_roots: list[tuple[str, Path]] = []
+        named_probabilities: dict[str, float] = {}
+        for key, roots in grouped_feature_roots.items():
+            if not roots:
+                continue
+            per_root_probability = mode_probabilities.get(key, 0.0) / len(roots)
+            for idx, root in enumerate(roots):
+                root_name = key if len(roots) == 1 else f"{key}_{idx + 1}"
+                named_feature_roots.append((root_name, root))
+                named_probabilities[root_name] = per_root_probability
+        return grouped_feature_roots, named_feature_roots, named_probabilities
+
+    flat_feature_roots = [
+        (root.name or f"{key}_root", root)
+        for key, roots in grouped_feature_roots.items()
+        for root in roots
+    ]
+    return grouped_feature_roots, flat_feature_roots, None
+
+
 def run_epoch_batchhard(model, loader, criterion, optimizer, device, train: bool, desc: str):
     model.train() if train else model.eval()
     total_loss = 0.0
@@ -119,6 +154,7 @@ def main():
     lr = t.LEARNING_RATE
     weight_decay = t.WEIGHT_DECAY
     train_feature_mode = d.TRAIN_FEATURE_MODE
+    model_dropout = m.CONFORMER_DROPOUT if m.MODEL_NAME.lower() == "conformer" else m.DROPOUT
 
     run_name = e.EXP_NAME
     run_root = Path(e.RUNS_DIR) / run_name
@@ -126,7 +162,7 @@ def main():
     ckpt_dir = run_root / "checkpoints"
     best_model_path = ckpt_dir / "best.pt"
     last_model_path = ckpt_dir / "last.pt"
-    collapse_patience = 2
+    collapse_patience = getattr(t, "COLLAPSE_PATIENCE", 2)
     collapse_tolerance = 5e-4
     collapse_require_train_and_val = True
 
@@ -145,27 +181,27 @@ def main():
     print(f"Run name: {run_name}")
     print(
         f"margin={margin} | P={p} | K={k} | emb_dim={emb_dim} | "
-        f"epochs={epochs} | lr={lr} | wd={weight_decay} | dropout={m.DROPOUT}")
+        f"epochs={epochs} | lr={lr} | wd={weight_decay} | dropout={model_dropout}")
     print("=" * 100)
 
     train_feature_probabilities = None
 
     if d.USE_PRECOMPUTED_FEATURES:
-        train_feature_keys = d.get_train_feature_root_keys(train_feature_mode)
-        train_feature_roots = {
-            key: d.get_train_feat_root(key)
-            for key in train_feature_keys
-        }
+        train_feature_roots, resolved_train_feature_roots, train_feature_probabilities = (
+            _resolve_train_feature_roots(
+                train_feature_mode,
+                d.TRAIN_FEATURE_PROBABILITIES,
+            )
+        )
         train_feat_str = ",".join(
-            f"{key}:{root}"
-            for key, root in train_feature_roots.items()
+            f"{key}:{list(roots)}"
+            for key, roots in train_feature_roots.items()
         )
         if d.is_probabilistic_train_feature_mode(train_feature_mode):
-            train_feature_probabilities = d.get_train_feature_probabilities(train_feature_mode)
             train_ds = RandomChoicePrecomputedFeatureDataset(
                 train_utts,
                 split_root=d.TRAIN_ROOT,
-                feature_roots=train_feature_roots,
+                feature_roots=resolved_train_feature_roots,
                 probabilities=train_feature_probabilities)
         else:
             if d.TRAIN_FEATURE_PROBABILITIES is not None:
@@ -176,7 +212,7 @@ def main():
             train_ds = PrecomputedFeatureDataset(
                 train_utts,
                 split_root=d.TRAIN_ROOT,
-                feat_root=list(train_feature_roots.values()))
+                feat_root=[root for _name, root in resolved_train_feature_roots])
         val_ds = PrecomputedFeatureDataset(
             val_utts,
             split_root=d.VAL_ROOT,
@@ -217,8 +253,8 @@ def main():
         shuffle=False,
         # drop_last=True,
         collate_fn=collate,
-        num_workers=2,
-        prefetch_factor=1,
+        num_workers=6,
+        prefetch_factor=2,
         persistent_workers=True)
 
     val_loader = DataLoader(
@@ -228,8 +264,8 @@ def main():
         shuffle=False,
         # drop_last=True,
         collate_fn=collate,
-        num_workers=2,
-        prefetch_factor=1,
+        num_workers=6,
+        prefetch_factor=2,
         persistent_workers=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -239,6 +275,7 @@ def main():
         emb_dim=emb_dim,
         dropout=m.DROPOUT,
         conformer_d_model=m.CONFORMER_D_MODEL,
+        conformer_dropout=m.CONFORMER_DROPOUT,
         conformer_num_heads=m.CONFORMER_NUM_HEADS,
         conformer_ff_mult=m.CONFORMER_FF_MULT,
         conformer_conv_kernel_size=m.CONFORMER_CONV_KERNEL_SIZE,
@@ -251,6 +288,21 @@ def main():
         model.parameters(),
         lr=lr,
         weight_decay=weight_decay)
+
+    resume_checkpoint_path = getattr(t, "RESUME_CHECKPOINT_PATH", None)
+    start_epoch = 0
+
+    if resume_checkpoint_path is not None:
+        resume_checkpoint_path = Path(resume_checkpoint_path)
+        if resume_checkpoint_path.exists():
+            ckpt = torch.load(resume_checkpoint_path, map_location=device)
+            model.load_state_dict(ckpt["model_state_dict"])
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            best_val_loss = float(ckpt.get("best_val_loss", float("inf")))
+            start_epoch = int(ckpt.get("epoch", 0))
+            print(f"Resumed from checkpoint: {resume_checkpoint_path} | start_epoch={start_epoch}")
+        else:
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_checkpoint_path}")
 
     writer = SummaryWriter(log_dir=str(tb_dir))
 
@@ -271,8 +323,9 @@ def main():
                 f"batch_size_val={p * k}",
                 f"lr={lr}",
                 f"weight_decay={weight_decay}",
-                f"dropout={m.DROPOUT}",
+                f"dropout={model_dropout}",
                 f"conformer_d_model={m.CONFORMER_D_MODEL}",
+                f"conformer_dropout={m.CONFORMER_DROPOUT}",
                 f"conformer_num_heads={m.CONFORMER_NUM_HEADS}",
                 f"conformer_ff_mult={m.CONFORMER_FF_MULT}",
                 f"conformer_conv_kernel_size={m.CONFORMER_CONV_KERNEL_SIZE}",
@@ -297,7 +350,8 @@ def main():
 
     # ---- TRAIN LOOP ----
     try:
-        for epoch in range(epochs):
+        best_val_loss = locals().get("best_val_loss", float("inf"))
+        for epoch in range(start_epoch, epochs):
             start = time.perf_counter()
 
             tr_loss = run_epoch_batchhard(
