@@ -13,16 +13,9 @@ from src.config import experiment_config as e
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-COOLDOWN_SECONDS = 1
+COOLDOWN_SECONDS = 20
 COLLAPSED_TRAINING_EXIT_CODE = 42
-DEFAULT_VERIFY_SPLITS = (
-    "val", "val_noise", "val_white",
-    "test", "test_noise", "test_white")
-NOISY_VERIFY_SPLITS = (
-    "val_noise", "val_white",
-    "test_noise", "test_white")
-WHITE_VERIFY_SPLITS = ("val_white", "test_white")
-CLEAN_VERIFY_SPLITS = ("val", "test")
+DEFAULT_VERIFY_SPLITS = ("dev_clean", "dev_other", "test_clean", "test_other")
 
 
 @dataclass(frozen=True)
@@ -38,7 +31,7 @@ class ExperimentSpec:
     snr_max: Optional[float] = None
     train_feature_subdir: Optional[str] = None
     emb_dim: int = 192
-    model_name: str = "conformer"  # conformer, cnn
+    model_name: str = "cnn"  # conformer, cnn
     margin: float = 0.22
     p: int = 12
     k: int = 5
@@ -46,44 +39,150 @@ class ExperimentSpec:
     weight_decay: float = 1e-4
     epochs: int = 30
     dropout: float = 0.3
+    conformer_dropout: float = 0.1
     conformer_d_model: int = 144
     conformer_num_heads: int = 4
     conformer_ff_mult: int = 4
-    conformer_conv_kernel_size: int = 15
-    conformer_num_blocks: int = 2
+    conformer_conv_kernel_size: int = 31
+    conformer_num_blocks: int = 4
+    collapse_patience: int = 3
+    resume_from_run: Optional[str] = None
+    resume_checkpoint_type: str = "best"
     verify_splits: tuple[str, ...] = DEFAULT_VERIFY_SPLITS
-    verify_checkpoint_types: tuple[str, ...] = ("best",)  # best, last
-    global_summary_name: str = "verify_summary_new.csv"
+    verify_checkpoint_types: tuple[str, ...] = ("last", "best")  # best, last
+    global_summary_name: str = "verify_summary_more_dataset.csv"
     save_verify_artifacts: bool = False
+    skip_precompute: bool = False
     run_train: bool = True
 
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
-    "1": ExperimentSpec(
-        name="conf_baseline",
-        run_name="conf_baseline",
-        train_feature_mode="clean",
-        verify_splits=DEFAULT_VERIFY_SPLITS,
-    ),
     "2": ExperimentSpec(
-        name="conf_clean+esc50_snr20+white25",
-        run_name="conf_clean+esc50_snr20+white25  0.5 0.3 0.2",
-        train_feature_mode="clean|noise|white",
-        train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
-        train_augments=(
-            ("noise", "train_noise", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
-        verify_splits=DEFAULT_VERIFY_SPLITS,
+        name="cnn1d_emb256_m022_P8K8_lr00005  ++",
+        run_name="cnn1d_emb256_m022_P8K8_lr00005  ++",
+        train_feature_mode="clean",
+        emb_dim=256,
+        p=8,
+        k=8,
+        lr=5e-4,
     ),
     "3": ExperimentSpec(
-        name="clean+esc50_snr20",
-        run_name="clean+esc50_snr20  0.5 0.5",
+        name="cnn1d_emb256_m022_P15K4_lr00005  ++",
+        run_name="cnn1d_emb256_m022_P15K4_lr00005  ++",
+        train_feature_mode="clean",
+        emb_dim=256,
+        p=15,
+        k=4,
+        lr=5e-4,
+    ),
+    "4": ExperimentSpec(
+        name="cnn1d_emb384_m022_P15K4_lr00003  ++",
+        run_name="cnn1d_emb384_m022_P15K4_lr00003  ++",
+        train_feature_mode="clean",
+        emb_dim=384,
+        p=15,
+        k=4,
+        lr=3e-4,
+    ),
+    "5": ExperimentSpec(
+        name="cnn1d_emb384_m022_P8K8_lr00003  ++",
+        run_name="cnn1d_emb384_m022_P8K8_lr00003  ++",
+        train_feature_mode="clean",
+        emb_dim=384,
+        p=8,
+        k=8,
+        lr=3e-4,
+    ),
+    "6": ExperimentSpec(
+        name="cnn1d_emb256_clean+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++",
+        run_name="cnn1d_emb256_clean+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++",
         train_feature_mode="clean|noise|white",
-        train_feature_probabilities={"clean": 0.5, "noise": 0.5, "white": 0.0},
+        emb_dim=256,
+        verify_checkpoint_types=("last", "best"),
+        train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
         train_augments=(
-            ("noise", "train_noise", 1.0, 20.0, 20.0),
+            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
             ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
-        verify_splits=DEFAULT_VERIFY_SPLITS,
+        skip_precompute=True,
+    ),
+    "7": ExperimentSpec(
+        name="cnn1d_emb384_lr00003_clean+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++",
+        run_name="cnn1d_emb384_lr00003_clean+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++",
+        train_feature_mode="clean|noise|white",
+        emb_dim=384,
+        lr=3e-4,
+        verify_checkpoint_types=("last", "best"),
+        train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
+        train_augments=(
+            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
+        skip_precompute=True,
+    ),
+    # "6": ExperimentSpec(
+    #     name="cnn1d_emb192_m022_P8K8_lr00005  ++",
+    #     run_name="cnn1d_emb192_m022_P8K8_lr00005  ++",
+    #     train_feature_mode="clean",
+    # ),
+    # "7": ExperimentSpec(
+    #     name="cnn1d_emb192_m022_P15K4_lr00005  ++",
+    #     run_name="cnn1d_emb192_m022_P15K4_lr00005  ++",
+    #     train_feature_mode="clean",
+    # ),
+    # "8": ExperimentSpec(
+    #     name="clean+esc50_snr20+white_snr25  0.5 0.3 0.2  ++",
+    #     run_name="clean+esc50_snr20+white_snr25 0.5 0.3 0.2  ++",
+    #     train_feature_mode="clean|noise|white",
+    #     emb_dim=192,
+    #     train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
+    #     train_augments=(
+    #         ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+    #         ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
+    #     skip_precompute=True,
+    # ),
+    # "warmup": ExperimentSpec(
+    #     name="conf_warmup_clean  ++",
+    #     run_name="conf_warmup_clean  ++",
+    #     train_feature_mode="clean",
+    #     model_name="conformer",
+    #     lr=1e-4,
+    #     epochs=5,
+    # ),
+    # "9": ExperimentSpec(
+    #     name="conf_clean  ++",
+    #     run_name="conf_clean  ++",
+    #     train_feature_mode="clean",
+    #     model_name="conformer",
+    #     lr=1e-4,
+    # ),
+    # "10": ExperimentSpec(
+    #     name="conf_clean+esc50_snr20+white_snr25  0.5 0.3 0.2  ++",
+    #     run_name="conf_clean+esc50_snr20+white_snr25 0.5 0.3 0.2  ++",
+    #     train_feature_mode="clean|noise|white",
+    #     emb_dim=192,
+    #     train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
+    #     train_augments=(
+    #         ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+    #         ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
+    # ),
+    "11": ExperimentSpec(
+        name="conf_emb256_clean+esc50_snr20  0.7 0.3  ++",
+        run_name="conf_emb256_clean+esc50_snr20 0.7 0.3  ++",
+        train_feature_mode="clean|noise|white",
+        emb_dim=256,
+        train_feature_probabilities={"clean": 0.7, "noise": 0.3, "white": 0.0},
+        train_augments=(
+            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
+    ),
+    "12": ExperimentSpec(
+        name="conf_clean+white_snr20-25  0.8 0.2  ++",
+        run_name="conf_clean+white_snr20-25 0.8 0.2  ++",
+        train_feature_mode="clean|noise|white",
+        emb_dim=256,
+        train_feature_probabilities={"clean": 0.8, "noise": 0.0, "white": 0.2},
+        train_augments=(
+            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
     ),
 }
 
@@ -92,42 +191,34 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run precomputed-feature training/verification experiments, "
-            "including evaluation-only presets for existing checkpoints."
-        )
-    )
+            "including evaluation-only presets for existing checkpoints."))
     parser.add_argument(
         "--experiments",
         nargs="+",
         choices=[*EXPERIMENTS.keys(), "all"],
         default=["all"],
-        help="Which experiments to run.",
-    )
+        help="Which experiments to run.")
     parser.add_argument(
         "--skip-precompute",
         action="store_true",
-        help="Skip feature precomputation.",
-    )
+        help="Skip feature precomputation.")
     parser.add_argument(
         "--skip-train",
         action="store_true",
-        help="Skip training.",
-    )
+        help="Skip training.")
     parser.add_argument(
         "--skip-verify",
         action="store_true",
-        help="Skip verification.",
-    )
+        help="Skip verification.")
     parser.add_argument(
         "--overwrite-features",
         action="store_true",
-        help="Recompute feature caches even if they already exist.",
-    )
+        help="Recompute feature caches even if they already exist.")
     parser.add_argument(
         "--cooldown-seconds",
         type=int,
         default=COOLDOWN_SECONDS,
-        help="Pause between experiments.",
-    )
+        help="Pause between experiments.")
     return parser.parse_args()
 
 
@@ -141,12 +232,33 @@ def run_python_code(code: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-c", code],
         cwd=str(PROJECT_ROOT),
-        check=False,
-    )
+        check=False)
 
 
 def get_last_checkpoint_path(spec: ExperimentSpec) -> Path:
-    return Path(e.RUNS_DIR) / spec.run_name / "checkpoints" / "last.pt"
+    return e.DEFAULT_RUNS_DIR / spec.run_name / "checkpoints" / "last.pt"
+
+
+def get_resume_checkpoint_path(spec: ExperimentSpec) -> Optional[Path]:
+    if spec.resume_from_run is None:
+        return None
+    checkpoint_name = "best.pt" if spec.resume_checkpoint_type == "best" else "last.pt"
+    return Path(e.RUNS_DIR) / spec.resume_from_run / "checkpoints" / checkpoint_name
+
+
+def get_resolved_train_feature_probabilities(spec: ExperimentSpec) -> dict[str, float]:
+    return d.get_train_feature_probabilities(
+        spec.train_feature_mode,
+        spec.train_feature_probabilities)
+
+
+def is_train_feature_enabled(spec: ExperimentSpec, key: str) -> bool:
+    mode_keys = d.get_train_feature_root_keys(spec.train_feature_mode)
+    if key not in mode_keys:
+        return False
+    if not d.is_probabilistic_train_feature_mode(spec.train_feature_mode):
+        return True
+    return get_resolved_train_feature_probabilities(spec).get(key, 0.0) > 0.0
 
 
 def infer_train_augment_kind(spec: ExperimentSpec) -> Optional[str]:
@@ -173,19 +285,18 @@ def get_train_feature_subdir(spec: ExperimentSpec) -> Optional[str]:
     if augment_kind is None:
         return None
     if spec.snr_min is None or spec.snr_max is None:
-        return f"train_{augment_kind}"
+        return f"{d.TRAIN_SPLIT_NAME}_{augment_kind}"
 
     return (
-        f"train_{augment_kind}_snr"
-        f"{format_cache_value(spec.snr_min)}_{format_cache_value(spec.snr_max)}"
-    )
+        f"{d.TRAIN_SPLIT_NAME}_{augment_kind}_snr"
+        f"{format_cache_value(spec.snr_min)}_{format_cache_value(spec.snr_max)}")
 
 
 def get_train_feature_overrides(spec: ExperimentSpec) -> dict[str, str]:
     return {
         augment_kind: feature_subdir
         for augment_kind, feature_subdir, _noise_prob, _snr_min, _snr_max in get_train_augments(spec)
-    }
+        if is_train_feature_enabled(spec, augment_kind)}
 
 
 def get_train_augments(spec: ExperimentSpec) -> tuple[tuple[str, str, float, float, float], ...]:
@@ -198,18 +309,15 @@ def get_train_augments(spec: ExperimentSpec) -> tuple[tuple[str, str, float, flo
         augment_kind is None
         or feature_subdir is None
         or spec.snr_min is None
-        or spec.snr_max is None
-    ):
+        or spec.snr_max is None):
         return ()
 
     return (
-        (
-            augment_kind,
-            feature_subdir,
-            spec.noise_prob,
-            spec.snr_min,
-            spec.snr_max,
-        ),
+        (augment_kind,
+         feature_subdir,
+         spec.noise_prob,
+         spec.snr_min,
+         spec.snr_max),
     )
 
 
@@ -221,24 +329,22 @@ def collect_train_precompute_requests(
 
     for spec in experiments:
         mode_keys = d.get_train_feature_root_keys(spec.train_feature_mode)
-        if "clean" in mode_keys:
+        if "clean" in mode_keys and is_train_feature_enabled(spec, "clean"):
             need_train_clean = True
 
         for augment_kind, feature_subdir, noise_prob, snr_min, snr_max in get_train_augments(spec):
+            if not is_train_feature_enabled(spec, augment_kind):
+                continue
             if augment_kind not in mode_keys:
                 raise ValueError(
                     f"Experiment {spec.name} defines train augment {augment_kind!r} "
-                    f"but train_feature_mode is {spec.train_feature_mode!r}."
-                )
+                    f"but train_feature_mode is {spec.train_feature_mode!r}.")
             train_variants.append(
-                (
-                    augment_kind,
-                    feature_subdir,
-                    noise_prob,
-                    snr_min,
-                    snr_max,
-                )
-            )
+                (augment_kind,
+                 feature_subdir,
+                 noise_prob,
+                 snr_min,
+                 snr_max))
 
     return need_train_clean, tuple(dict.fromkeys(train_variants))
 
@@ -266,17 +372,10 @@ fe = LogMelExtraction(
     n_mels=f.N_MELS,
     f_min=f.FMIN,
     f_max=f.FMAX,
-    eps=f.EPS,
-)
+    eps=f.EPS)
 
 for path in (
-    d.VAL_FEAT_ROOT,
-    d.VAL_NOISY_FEAT_ROOT,
-    d.VAL_WHITE_FEAT_ROOT,
-    d.TEST_FEAT_ROOT,
-    d.TEST_NOISY_FEAT_ROOT,
-    d.TEST_WHITE_FEAT_ROOT,
-):
+    *[split_def["feat_root"] for split_def in d.get_eval_split_definitions().values()],):
     path.mkdir(parents=True, exist_ok=True)
 
 if {need_train_clean!r}:
@@ -286,23 +385,17 @@ if {need_train_clean!r}:
         wav_root=Path(d.TRAIN_ROOT),
         feat_root=d.TRAIN_CLEAN_FEAT_ROOT,
         fe=fe,
-        overwrite={overwrite!r},
-    )
+        overwrite={overwrite!r})
 
-p._precompute_split(
-    split_name="val",
-    wav_root=Path(d.VAL_ROOT),
-    feat_root=d.VAL_FEAT_ROOT,
-    fe=fe,
-    overwrite={overwrite!r},
-)
-p._precompute_split(
-    split_name="test",
-    wav_root=Path(d.TEST_ROOT),
-    feat_root=d.TEST_FEAT_ROOT,
-    fe=fe,
-    overwrite={overwrite!r},
-)
+for split_name, split_def in d.get_eval_split_definitions().items():
+    if split_def["is_noisy"]:
+        continue
+    p._precompute_split(
+        split_name=split_name,
+        wav_root=Path(split_def["wav_root"]),
+        feat_root=Path(split_def["feat_root"]),
+        fe=fe,
+        overwrite={overwrite!r})
 
 for augment_kind, feature_subdir, noise_prob, snr_min, snr_max in {list(train_variants)!r}:
     feat_root = Path(d.PRECOMPUTED_ROOT) / feature_subdir
@@ -313,16 +406,14 @@ for augment_kind, feature_subdir, noise_prob, snr_min, snr_max in {list(train_va
         noise_root=d.ESC50_TRAIN_NOISE_ROOT if augment_kind == "noise" else None,
         prob=noise_prob,
         snr_min=snr_min,
-        snr_max=snr_max,
-    )
+        snr_max=snr_max)
     p._precompute_split(
         split_name=f"train_{{augment_kind}}:{{feature_subdir}}",
         wav_root=Path(d.TRAIN_ROOT),
         feat_root=feat_root,
         fe=fe,
         augmenter=augmenter,
-        overwrite={overwrite!r},
-    )
+        overwrite={overwrite!r})
 
 p._precompute_augmented_eval_splits(fe, overwrite={overwrite!r})
 """
@@ -338,13 +429,9 @@ from src.config import experiment_config as e
 from src.config import model_config as m
 from src.config import train_config as t
 
-e.EXP_NAME = {spec.run_name!r}
-e.EXP_DIR = e.RUNS_DIR / e.EXP_NAME
-e.TB_DIR = e.EXP_DIR / "tensorboard"
-e.CKPT_DIR = e.EXP_DIR / "checkpoints"
-e.RESULTS_DIR = e.EXP_DIR / "results"
-e.BEST_MODEL_PATH = e.CKPT_DIR / "best.pt"
-e.LAST_MODEL_PATH = e.CKPT_DIR / "last.pt"
+e.configure_experiment(
+    exp_name={spec.run_name!r},
+    runs_dir=e.DEFAULT_RUNS_DIR),
 
 d.TRAIN_FEATURE_MODE = {spec.train_feature_mode!r}
 d.TRAIN_FEATURE_PROBABILITIES = {spec.train_feature_probabilities!r}
@@ -361,9 +448,14 @@ t.EPOCHS = {spec.epochs!r}
 t.LEARNING_RATE = {spec.lr!r}
 t.WEIGHT_DECAY = {spec.weight_decay!r}
 
+t.COLLAPSE_PATIENCE = {spec.collapse_patience!r}
+resume_checkpoint_path = {str(get_resume_checkpoint_path(spec)) if get_resume_checkpoint_path(spec) is not None else None!r}
+t.RESUME_CHECKPOINT_PATH = resume_checkpoint_path
+
 m.EMB_DIM = {spec.emb_dim!r}
 m.MODEL_NAME = {spec.model_name!r}
 m.DROPOUT = {spec.dropout!r}
+m.CONFORMER_DROPOUT = {spec.conformer_dropout!r}
 m.CONFORMER_D_MODEL = {spec.conformer_d_model!r}
 m.CONFORMER_NUM_HEADS = {spec.conformer_num_heads!r}
 m.CONFORMER_FF_MULT = {spec.conformer_ff_mult!r}
@@ -393,17 +485,14 @@ from src.config import model_config as m
 from src.models.model import build_embedding_model
 from src.pipelines import verify as verify_mod
 
-e.EXP_NAME = {spec.run_name!r}
-e.EXP_DIR = e.RUNS_DIR / e.EXP_NAME
-e.TB_DIR = e.EXP_DIR / "tensorboard"
-e.CKPT_DIR = e.EXP_DIR / "checkpoints"
-e.RESULTS_DIR = e.EXP_DIR / "results"
-e.BEST_MODEL_PATH = e.CKPT_DIR / "best.pt"
-e.LAST_MODEL_PATH = e.CKPT_DIR / "last.pt"
+e.configure_experiment(
+    exp_name={spec.run_name!r},
+    runs_dir=e.DEFAULT_RUNS_DIR),
 
 m.EMB_DIM = {spec.emb_dim!r}
 m.MODEL_NAME = {spec.model_name!r}
 m.DROPOUT = {spec.dropout!r}
+m.CONFORMER_DROPOUT = {spec.conformer_dropout!r}
 m.CONFORMER_D_MODEL = {spec.conformer_d_model!r}
 m.CONFORMER_NUM_HEADS = {spec.conformer_num_heads!r}
 m.CONFORMER_FF_MULT = {spec.conformer_ff_mult!r}
@@ -415,14 +504,13 @@ if "noise" in train_feature_overrides:
 if "white" in train_feature_overrides:
     d.TRAIN_WHITE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / train_feature_overrides["white"]
 
-run_root = Path(e.RUNS_DIR) / e.EXP_NAME
+run_root = Path(e.EXP_DIR)
 verify_dir = run_root / "results" / "verify"
 per_run_csv = verify_dir / "metrics_summary.csv"
 global_csv_paths = verify_mod.get_global_summary_paths(
     runs_dir=Path(e.RUNS_DIR),
     primary_summary_name={spec.global_summary_name!r},
-    model_name=m.MODEL_NAME,
-)
+    model_name=m.MODEL_NAME)
 selected_splits = set({list(spec.verify_splits)!r})
 checkpoint_types = {list(spec.verify_checkpoint_types)!r}
 
@@ -439,6 +527,7 @@ for checkpoint_type in checkpoint_types:
         emb_dim=m.EMB_DIM,
         dropout=m.DROPOUT,
         conformer_d_model=m.CONFORMER_D_MODEL,
+        conformer_dropout=m.CONFORMER_DROPOUT,
         conformer_num_heads=m.CONFORMER_NUM_HEADS,
         conformer_ff_mult=m.CONFORMER_FF_MULT,
         conformer_conv_kernel_size=m.CONFORMER_CONV_KERNEL_SIZE,
@@ -459,8 +548,7 @@ for checkpoint_type in checkpoint_types:
             device=device,
             output_dir=verify_dir,
             experiment_name=run_root.name,
-            save_artifacts={spec.save_verify_artifacts!r},
-        )
+            save_artifacts={spec.save_verify_artifacts!r})
         rows.append(row)
 
 verify_mod.upsert_metrics_rows(per_run_csv, rows)
@@ -482,26 +570,28 @@ def main() -> None:
         for spec in experiments
         if spec.run_train
         and not args.skip_train
-        and not get_last_checkpoint_path(spec).exists()
-    ]
+        and not get_last_checkpoint_path(spec).exists()]
     need_train_clean, train_variants = collect_train_precompute_requests(train_experiments)
 
-    if not args.skip_precompute:
+    should_skip_precompute = args.skip_precompute or all(spec.skip_precompute for spec in experiments)
+
+    if not should_skip_precompute:
         print("=" * 80)
         print("Precomputing required feature sets...")
         print("=" * 80)
         result = precompute_feature_sets(
             overwrite=args.overwrite_features,
             need_train_clean=need_train_clean,
-            train_variants=train_variants,
-        )
+            train_variants=train_variants)
         if result.returncode != 0:
             print("Feature precomputation failed. Stopping.")
             return
 
     for idx, spec in enumerate(experiments, start=1):
         print("=" * 80)
-        print(f"Experiment {idx}/{len(experiments)}: {spec.name} -> {spec.run_name}")
+        print(
+            f"Experiment {idx}/{len(experiments)}: {spec.name} -> "
+            f"{e.DEFAULT_RUNS_DIR / spec.run_name}")
         print("=" * 80)
 
         if spec.run_train and not args.skip_train:
@@ -512,15 +602,13 @@ def main() -> None:
             else:
                 print(
                     f"Training {spec.run_name} with precomputed mode "
-                    f"{spec.train_feature_mode!r}..."
-                )
+                    f"{spec.train_feature_mode!r}...")
                 result = train_experiment(spec)
                 if result.returncode == COLLAPSED_TRAINING_EXIT_CODE:
                     training_collapsed = True
                     print(
                         f"Training aborted early due to collapse for {spec.run_name}. "
-                        "Skipping verification and continuing."
-                    )
+                        "Skipping verification and continuing.")
                 elif result.returncode != 0:
                     print("Training failed. Stopping.")
                     return
