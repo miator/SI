@@ -1,36 +1,50 @@
 from pathlib import Path
 from typing import Optional, Union
 
-# base folders on RunPod
-WORKSPACE_ROOT = Path("/workspace")
-DATA_ROOT = WORKSPACE_ROOT / "data"
+TRAIN_DATA_ROOT = Path(
+    r"C:\Users\User\Desktop\Data\LibriSpeech_standardized_chunks_3s"
+)
+EVAL_DATA_ROOT = Path(
+    r"C:\Users\User\Desktop\Data\Librispeech_eval_standardized_chunks_3s"
+)
 
-# wav split tree that you must upload
-WAV_ROOT = DATA_ROOT / "wav"
-TRAIN_ROOT = WAV_ROOT / "train"
-VAL_ROOT = WAV_ROOT / "val"
-TEST_ROOT = WAV_ROOT / "test"
+TRAIN_WAV_ROOT = TRAIN_DATA_ROOT / "wav" / "train_clean100"
+EVAL_WAV_ROOT = EVAL_DATA_ROOT / "wav"
+DEV_CLEAN_WAV_ROOT = EVAL_WAV_ROOT / "dev-clean"
+DEV_OTHER_WAV_ROOT = EVAL_WAV_ROOT / "dev-other"
+TEST_CLEAN_WAV_ROOT = EVAL_WAV_ROOT / "test-clean"
+TEST_OTHER_WAV_ROOT = EVAL_WAV_ROOT / "test-other"
 
-# precomputed cache root that you will upload
-PRECOMPUTED_ROOT = DATA_ROOT / "logmel_cache"
+TRAIN_PRECOMPUTED_ROOT = TRAIN_DATA_ROOT / "logmel_cache"
+TRAIN_CLEAN_FEAT_ROOT = TRAIN_PRECOMPUTED_ROOT / "train_clean100"
+TRAIN_NOISE_FEAT_ROOTS = (
+    TRAIN_PRECOMPUTED_ROOT / "train_noise_snr20",
+)
+TRAIN_WHITE_FEAT_ROOTS = (
+    TRAIN_PRECOMPUTED_ROOT / "train_white_snr25",
+)
 
-# optional: only needed for precompute / on-the-fly noise creation
-ESC50_NOISE_ROOT = DATA_ROOT / "esc50_audio_standardized_16k"
+EVAL_PRECOMPUTED_ROOT = EVAL_DATA_ROOT / "logmel_cache"
+DEV_CLEAN_FEAT_ROOT = EVAL_PRECOMPUTED_ROOT / "dev-clean"
+DEV_OTHER_FEAT_ROOT = EVAL_PRECOMPUTED_ROOT / "dev-other"
+TEST_CLEAN_FEAT_ROOT = EVAL_PRECOMPUTED_ROOT / "test-clean"
+TEST_OTHER_FEAT_ROOT = EVAL_PRECOMPUTED_ROOT / "test-other"
+
+ESC50_NOISE_ROOT = Path(r"C:\Users\User\Desktop\Data\ESC-50-master-noise\audio_standardized_16k")
 ESC50_TRAIN_NOISE_ROOT = ESC50_NOISE_ROOT / "train-noise"
 ESC50_VAL_NOISE_ROOT = ESC50_NOISE_ROOT / "val-noise"
 ESC50_TEST_NOISE_ROOT = ESC50_NOISE_ROOT / "test-noise"
 
-TRAIN_CLEAN_FEAT_ROOT = PRECOMPUTED_ROOT / "train"
-TRAIN_NOISE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_noise"
-TRAIN_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "train_white_snr25"
+TRAIN_SPLIT_NAME = "train_clean100"
+TRAIN_ROOT = TRAIN_WAV_ROOT
+VAL_ROOT = DEV_CLEAN_WAV_ROOT
+TEST_ROOT = TEST_CLEAN_WAV_ROOT
+PRECOMPUTED_ROOT = TRAIN_PRECOMPUTED_ROOT
+TRAIN_NOISE_FEAT_ROOT = TRAIN_NOISE_FEAT_ROOTS[0]
+TRAIN_WHITE_FEAT_ROOT = TRAIN_WHITE_FEAT_ROOTS[0]
 
-VAL_FEAT_ROOT = PRECOMPUTED_ROOT / "val"
-VAL_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "val_noise"
-VAL_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "val_white_snr20"
-
-TEST_FEAT_ROOT = PRECOMPUTED_ROOT / "test"
-TEST_NOISY_FEAT_ROOT = PRECOMPUTED_ROOT / "test_noise"
-TEST_WHITE_FEAT_ROOT = PRECOMPUTED_ROOT / "test_white_snr20"
+VAL_FEAT_ROOT = DEV_CLEAN_FEAT_ROOT
+TEST_FEAT_ROOT = TEST_CLEAN_FEAT_ROOT
 
 USE_PRECOMPUTED_FEATURES = True
 TRAIN_FEATURE_MODE = "clean"
@@ -44,53 +58,37 @@ def is_probabilistic_train_feature_mode(train_feature_mode: Optional[str] = None
 
 def get_eval_split_definitions() -> dict[str, dict[str, Union[Path, float, bool, None, str]]]:
     return {
-        "val": {
-            "wav_root": Path(VAL_ROOT),
-            "feat_root": VAL_FEAT_ROOT,
+        "dev_clean": {
+            "wav_root": DEV_CLEAN_WAV_ROOT,
+            "feat_root": DEV_CLEAN_FEAT_ROOT,
             "augment_kind": None,
             "noise_root": None,
             "snr": None,
             "is_noisy": False,
         },
-        "val_noise": {
-            "wav_root": Path(VAL_ROOT),
-            "feat_root": VAL_NOISY_FEAT_ROOT,
-            "augment_kind": "noise",
-            "noise_root": ESC50_VAL_NOISE_ROOT,
-            "snr": 20.0,
-            "is_noisy": True,
-        },
-        "val_white": {
-            "wav_root": Path(VAL_ROOT),
-            "feat_root": VAL_WHITE_FEAT_ROOT,
-            "augment_kind": "white",
-            "noise_root": None,
-            "snr": 20.0,
-            "is_noisy": True,
-        },
-        "test": {
-            "wav_root": Path(TEST_ROOT),
-            "feat_root": TEST_FEAT_ROOT,
+        "dev_other": {
+            "wav_root": DEV_OTHER_WAV_ROOT,
+            "feat_root": DEV_OTHER_FEAT_ROOT,
             "augment_kind": None,
             "noise_root": None,
             "snr": None,
             "is_noisy": False,
         },
-        "test_noise": {
-            "wav_root": Path(TEST_ROOT),
-            "feat_root": TEST_NOISY_FEAT_ROOT,
-            "augment_kind": "noise",
-            "noise_root": ESC50_TEST_NOISE_ROOT,
-            "snr": 20.0,
-            "is_noisy": True,
-        },
-        "test_white": {
-            "wav_root": Path(TEST_ROOT),
-            "feat_root": TEST_WHITE_FEAT_ROOT,
-            "augment_kind": "white",
+        "test_clean": {
+            "wav_root": TEST_CLEAN_WAV_ROOT,
+            "feat_root": TEST_CLEAN_FEAT_ROOT,
+            "augment_kind": None,
             "noise_root": None,
-            "snr": 20.0,
-            "is_noisy": True,
+            "snr": None,
+            "is_noisy": False,
+        },
+        "test_other": {
+            "wav_root": TEST_OTHER_WAV_ROOT,
+            "feat_root": TEST_OTHER_FEAT_ROOT,
+            "augment_kind": None,
+            "noise_root": None,
+            "snr": None,
+            "is_noisy": False,
         },
     }
 
@@ -124,21 +122,21 @@ def get_train_feature_root_keys(train_feature_mode: Optional[str] = None) -> tup
     raise ValueError(f"Unsupported TRAIN_FEATURE_MODE: {mode}")
 
 
-def get_train_feat_root(key: str) -> Path:
+def get_train_feat_roots_for_key(key: str) -> tuple[Path, ...]:
     if key == "clean":
-        return TRAIN_CLEAN_FEAT_ROOT
+        return (TRAIN_CLEAN_FEAT_ROOT,)
     if key == "noise":
-        return TRAIN_NOISE_FEAT_ROOT
+        return tuple(TRAIN_NOISE_FEAT_ROOTS)
     if key == "white":
-        return TRAIN_WHITE_FEAT_ROOT
+        return tuple(TRAIN_WHITE_FEAT_ROOTS)
     raise ValueError(f"Unsupported train feature root key: {key}")
 
 
 def get_train_feat_roots(train_feature_mode: Optional[str] = None):
-    return [
-        get_train_feat_root(key)
-        for key in get_train_feature_root_keys(train_feature_mode)
-    ]
+    roots: list[Path] = []
+    for key in get_train_feature_root_keys(train_feature_mode):
+        roots.extend(get_train_feat_roots_for_key(key))
+    return roots
 
 
 def get_train_feature_probabilities(
