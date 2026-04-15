@@ -8,15 +8,15 @@ from tqdm import tqdm
 import torchaudio
 import torch
 
-SRC_SPLITS_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech-train-clean-100\LibriSpeech")
-OUT_WAV_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech_train-clean-100\LibriSpeech_standardized")
+OUT_WAV_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech_eval_standardized")
 TARGET_SR = 16000
 TARGET_MONO = True
 
 SPLITS = {
-    "train": "train-200spk",
-    "val": "val-25spk",
-    "test": "test-26spk",
+    "dev-clean": Path(r"C:\Users\User\Desktop\Data\dev-clean"),
+    "dev-other": Path(r"C:\Users\User\Desktop\Data\dev-other"),
+    "test-clean": Path(r"C:\Users\User\Desktop\Data\test-clean"),
+    "test-other": Path(r"C:\Users\User\Desktop\Data\test-other"),
 }
 
 
@@ -61,14 +61,12 @@ def main():
     OUT_WAV_ROOT.mkdir(parents=True, exist_ok=True)
 
     all_tasks: List[Tuple[str, Path]] = []
-    for split_name, split_folder in SPLITS.items():
-        split_dir = SRC_SPLITS_ROOT / split_folder
+    for split_name, split_dir in SPLITS.items():
         if not split_dir.exists():
             raise FileNotFoundError(f"Missing split folder: {split_dir}")
         flacs = sorted([p for p in split_dir.rglob("*.flac") if p.is_file()])
         all_tasks.extend([(split_name, p) for p in flacs])
 
-    print("SRC_SPLITS_ROOT:", SRC_SPLITS_ROOT)
     print("OUT_WAV_ROOT:", OUT_WAV_ROOT)
     print("Total FLAC files found:", len(all_tasks))
 
@@ -76,21 +74,19 @@ def main():
     rows: List[FileRow] = []
 
     for split_name, flac_path in tqdm(all_tasks, desc="Standardizing FLAC->WAV"):
-        parts = flac_path.parts
-
-        split_folder = SPLITS[split_name]
+        split_root = SPLITS[split_name]
         try:
-            i = parts.index(split_folder)
+            rel_parts = flac_path.relative_to(split_root).parts
         except ValueError:
-            bad.append((str(flac_path), f"Could not locate split folder '{split_folder}' in path parts"))
+            bad.append((str(flac_path), f"Could not locate split root '{split_root}' in path"))
             continue
 
-        if i + 2 >= len(parts):
+        if len(rel_parts) < 3:
             bad.append((str(flac_path), "Path too short to extract speaker_id/book_id"))
             continue
 
-        speaker_id = parts[i + 1]
-        book_id = parts[i + 2]
+        speaker_id = rel_parts[0]
+        book_id = rel_parts[1]
         utt_id = flac_path.stem
 
         out_wav_path = OUT_WAV_ROOT / split_name / speaker_id / book_id / f"{utt_id}.wav"
