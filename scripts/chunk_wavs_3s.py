@@ -11,12 +11,13 @@ import torch
 import torchaudio
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-SRC_STD_WAV_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech-train-clean-100/LibriSpeech_standardized")
-OUT_CHUNKS_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech-train-clean-100/LibriSpeech_standardized_chunks_3s")
+# Eval splits that will be standardized first, then chunked into 3-second wavs.
+SRC_STD_WAV_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech_eval_standardized")
+OUT_CHUNKS_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech_eval_standardized_chunks_3s")
 
 WRITE_DUPLICATE_PCM16_TREE = True
 
-SPLITS = ["train", "val", "test"]
+SPLITS = ["dev-clean", "dev-other", "test-clean", "test-other"]
 
 TARGET_SR = 16000
 CHUNK_SECONDS = 3.0
@@ -142,6 +143,8 @@ def process_one_file(task: Dict[str, Any]) -> List[ChunkRow]:
 def build_tasks() -> List[Dict[str, Any]]:
     """
     Scan SRC_STD_WAV_ROOT for utterances:
+      SRC_STD_WAV_ROOT/<split>/<utt>.wav
+      or
       SRC_STD_WAV_ROOT/<split>/<speaker>/<book>/<utt>.wav
     Return a list of dict tasks with extracted ids.
     """
@@ -152,29 +155,37 @@ def build_tasks() -> List[Dict[str, Any]]:
         if not split_dir.exists():
             raise FileNotFoundError(f"Missing split directory: {split_dir}")
 
-        # speaker folders directly under split
-        speaker_dirs = sorted([p for p in split_dir.iterdir() if p.is_dir()], key=lambda p: p.name)
+        wav_files = sorted([p for p in split_dir.rglob("*.wav") if p.is_file()])
 
-        for spk_dir in speaker_dirs:
-            speaker_id = spk_dir.name
-            # book folders under speaker
-            book_dirs = sorted([p for p in spk_dir.iterdir() if p.is_dir()], key=lambda p: p.name)
+        for wav_path in wav_files:
+            rel_parts = wav_path.relative_to(split_dir).parts
 
-            for book_dir in book_dirs:
-                book_id = book_dir.name
-                wav_files = sorted([p for p in book_dir.glob("*.wav") if p.is_file()])
-
-                for wav_path in wav_files:
-                    utt_id = wav_path.stem
-                    tasks.append(
-                        {
-                            "split": split,
-                            "speaker_id": speaker_id,
-                            "book_id": book_id,
-                            "utt_id": utt_id,
-                            "src_path": str(wav_path),
-                        }
+            if len(rel_parts) == 1:
+                name_parts = wav_path.stem.split("-")
+                if len(name_parts) < 3:
+                    raise ValueError(
+                        f"Cannot infer speaker/book ids from flat wav filename: {wav_path.name}"
                     )
+                speaker_id = name_parts[0]
+                book_id = name_parts[1]
+            elif len(rel_parts) >= 3:
+                speaker_id = rel_parts[0]
+                book_id = rel_parts[1]
+            else:
+                raise ValueError(
+                    f"Unsupported standardized wav layout under {split_dir}: {wav_path}"
+                )
+
+            utt_id = wav_path.stem
+            tasks.append(
+                {
+                    "split": split,
+                    "speaker_id": speaker_id,
+                    "book_id": book_id,
+                    "utt_id": utt_id,
+                    "src_path": str(wav_path),
+                }
+            )
 
     return tasks
 
