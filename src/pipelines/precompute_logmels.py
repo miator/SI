@@ -75,14 +75,37 @@ def _precompute_augmented_eval_splits(fe, overwrite: bool = False):
         )
 
 
+def _maybe_precompute_train_split(
+        *,
+        split_name: str,
+        feat_root: Path,
+        fe,
+        overwrite: bool = False,
+        augmenter=None,
+):
+    train_root = Path(d.TRAIN_PRECOMPUTED_ROOT)
+    if not train_root.exists():
+        print(f"Skipping {split_name}: missing train root {train_root}")
+        return
+
+    _precompute_split(
+        split_name=split_name,
+        wav_root=train_root,
+        feat_root=feat_root,
+        fe=fe,
+        augmenter=augmenter,
+        overwrite=overwrite,
+    )
+
+
 def main():
     SEED = 37
     random.seed(SEED)
     torch.manual_seed(SEED)
 
-    train_mode = "noise"          # "clean", "noise", "both", "white", "clean+white"
-    overwrite = False             # False = skip existing, True = recompute
-    include_augmented_eval = True     # True = also precompute augmented eval splits
+    train_mode = d.TRAIN_FEATURE_MODE
+    overwrite = False
+    include_augmented_eval = True
     train_feature_keys = d.get_train_feature_root_keys(train_mode)
 
     fe = LogMelExtraction(
@@ -98,20 +121,17 @@ def main():
 
     directories = [
         *d.get_train_feat_roots(train_mode),
-        d.VAL_FEAT_ROOT,
-        d.VAL_NOISY_FEAT_ROOT,
-        d.VAL_WHITE_FEAT_ROOT,
-        d.TEST_FEAT_ROOT,
-        d.TEST_NOISY_FEAT_ROOT,
-        d.TEST_WHITE_FEAT_ROOT,
+        *[
+            split_def["feat_root"]
+            for split_def in d.get_eval_split_definitions().values()
+        ],
     ]
-    for path in directories:
+    for path in dict.fromkeys(directories):
         path.mkdir(parents=True, exist_ok=True)
 
     if "clean" in train_feature_keys:
-        _precompute_split(
+        _maybe_precompute_train_split(
             split_name="train_clean",
-            wav_root=Path(d.TRAIN_ROOT),
             feat_root=d.TRAIN_CLEAN_FEAT_ROOT,
             fe=fe,
             overwrite=overwrite,
@@ -126,9 +146,8 @@ def main():
             snr_min=a.SNR_MIN,
             snr_max=a.SNR_MAX,
         )
-        _precompute_split(
+        _maybe_precompute_train_split(
             split_name="train_noise",
-            wav_root=Path(d.TRAIN_ROOT),
             feat_root=d.TRAIN_NOISE_FEAT_ROOT,
             fe=fe,
             augmenter=augmenter,
@@ -143,29 +162,24 @@ def main():
             snr_min=a.WHITE_SNR_MIN,
             snr_max=a.WHITE_SNR_MAX,
         )
-        _precompute_split(
+        _maybe_precompute_train_split(
             split_name="train_white",
-            wav_root=Path(d.TRAIN_ROOT),
             feat_root=d.TRAIN_WHITE_FEAT_ROOT,
             fe=fe,
             augmenter=augmenter,
             overwrite=overwrite,
         )
 
-    _precompute_split(
-        split_name="val",
-        wav_root=Path(d.VAL_ROOT),
-        feat_root=d.VAL_FEAT_ROOT,
-        fe=fe,
-        overwrite=overwrite,
-    )
-    _precompute_split(
-        split_name="test",
-        wav_root=Path(d.TEST_ROOT),
-        feat_root=d.TEST_FEAT_ROOT,
-        fe=fe,
-        overwrite=overwrite,
-    )
+    for split_name, split_def in d.get_eval_split_definitions().items():
+        if split_def["is_noisy"]:
+            continue
+        _precompute_split(
+            split_name=split_name,
+            wav_root=Path(split_def["wav_root"]),
+            feat_root=Path(split_def["feat_root"]),
+            fe=fe,
+            overwrite=overwrite,
+        )
 
     if include_augmented_eval:
         _precompute_augmented_eval_splits(fe, overwrite=overwrite)
