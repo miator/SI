@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -59,8 +61,19 @@ class FeedForwardModule(nn.Module):
         return self.net(x)
 
 
+class StatisticsPooling(nn.Module):
+    def __init__(self, eps: float = 1e-5):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mean = x.mean(dim=1)
+        std = torch.sqrt(x.var(dim=1, unbiased=False).clamp_min(self.eps))
+        return torch.cat([mean, std], dim=1)
+
+
 class ConformerConvModule(nn.Module):
-    def __init__(self, d_model: int, kernel_size: int = 15, dropout: float = 0.1):
+    def __init__(self, d_model: int, kernel_size: int = 31, dropout: float = 0.1):
         super().__init__()
         if kernel_size % 2 == 0:
             raise ValueError("conv_kernel_size must be odd for same-length padding.")
@@ -97,7 +110,7 @@ class ConformerBlock(nn.Module):
         d_model: int,
         num_heads: int = 4,
         ff_mult: int = 4,
-        conv_kernel_size: int = 15,
+        conv_kernel_size: int = 31,
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -141,8 +154,8 @@ class ConformerEmbeddingNet(nn.Module):
         d_model: int = 144,
         num_heads: int = 4,
         ff_mult: int = 4,
-        conv_kernel_size: int = 15,
-        num_blocks: int = 2,
+        conv_kernel_size: int = 31,
+        num_blocks: int = 4,
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -162,7 +175,8 @@ class ConformerEmbeddingNet(nn.Module):
             ]
         )
         self.pool_norm = nn.LayerNorm(d_model)
-        self.emb = nn.Linear(d_model, emb_dim)
+        self.stats_pool = StatisticsPooling()
+        self.emb = nn.Linear(2 * d_model, emb_dim)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         x = self.input_proj(features)   # (B, T, D)
@@ -172,7 +186,7 @@ class ConformerEmbeddingNet(nn.Module):
             x = block(x)                # (B, T, D)
 
         x = self.pool_norm(x)
-        x = x.mean(dim=1)               # (B, D)
+        x = self.stats_pool(x)          # (B, 2D)
 
         e = self.emb(x)                 # (B, emb_dim)
         e = F.normalize(e, p=2, dim=1)  # (B, emb_dim)
@@ -188,8 +202,9 @@ def build_embedding_model(
     conformer_d_model: int = 144,
     conformer_num_heads: int = 4,
     conformer_ff_mult: int = 4,
-    conformer_conv_kernel_size: int = 15,
-    conformer_num_blocks: int = 2,
+    conformer_conv_kernel_size: int = 31,
+    conformer_num_blocks: int = 4,
+    conformer_dropout: Optional[float] = None,
 ) -> nn.Module:
     model_name = model_name.lower()
 
@@ -201,6 +216,7 @@ def build_embedding_model(
         )
 
     if model_name == "conformer":
+        effective_conformer_dropout = dropout if conformer_dropout is None else conformer_dropout
         return ConformerEmbeddingNet(
             n_feats=n_feats,
             emb_dim=emb_dim,
@@ -209,7 +225,7 @@ def build_embedding_model(
             ff_mult=conformer_ff_mult,
             conv_kernel_size=conformer_conv_kernel_size,
             num_blocks=conformer_num_blocks,
-            dropout=dropout,
+            dropout=effective_conformer_dropout,
         )
 
     raise ValueError(f"Unsupported MODEL_NAME: {model_name}")
