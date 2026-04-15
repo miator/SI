@@ -130,8 +130,9 @@ def get_global_summary_paths(
     model_name: str,
 ) -> list[Path]:
     paths = [runs_dir / primary_summary_name]
-    if model_name.lower() == "conformer":
-        paths.append(runs_dir / "verify_summary_conformer.csv")
+    model_summary_path = runs_dir / f"verify_summary_{model_name.lower()}.csv"
+    if runs_dir.name.lower() != model_name.lower() and model_summary_path not in paths:
+        paths.append(model_summary_path)
     return paths
 
 
@@ -429,7 +430,7 @@ def main():
     per_run_csv = verify_dir / "metrics_summary.csv"
     global_csv_paths = get_global_summary_paths(
         runs_dir=Path(e.RUNS_DIR),
-        primary_summary_name="verify_summary_new.csv",
+        primary_summary_name="verify_summary.csv",
         model_name=m.MODEL_NAME,
     )
 
@@ -444,6 +445,7 @@ def main():
         emb_dim=emb_dim,
         dropout=m.DROPOUT,
         conformer_d_model=m.CONFORMER_D_MODEL,
+        conformer_dropout=m.CONFORMER_DROPOUT,
         conformer_num_heads=m.CONFORMER_NUM_HEADS,
         conformer_ff_mult=m.CONFORMER_FF_MULT,
         conformer_conv_kernel_size=m.CONFORMER_CONV_KERNEL_SIZE,
