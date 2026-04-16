@@ -3,6 +3,7 @@ from pathlib import Path
 from functools import partial
 import warnings
 import json
+import random
 
 import torch
 from torch.utils.data import DataLoader
@@ -18,6 +19,8 @@ from src.data.dataset import (
     AudioDataset,
     PrecomputedFeatureDataset,
     RandomChoicePrecomputedFeatureDataset,
+    ResolvedPrecomputedFeatureDataset,
+    ResolvedRandomChoicePrecomputedFeatureDataset,
     pad_trunc_collate_fn,
     scan_split,
     build_label_map,
@@ -66,9 +69,83 @@ def _emit_collapse_status(exc: CollapsedTrainingError) -> None:
 def _labels_for_sampler(dataset, base_utterances) -> list[int]:
     if isinstance(dataset, RandomChoicePrecomputedFeatureDataset):
         return list(dataset.labels)
+    if isinstance(dataset, ResolvedPrecomputedFeatureDataset):
+        return list(dataset.labels)
+    if isinstance(dataset, ResolvedRandomChoicePrecomputedFeatureDataset):
+        return list(dataset.labels)
     if isinstance(dataset, PrecomputedFeatureDataset):
         return list(dataset.labels) * dataset.num_feature_roots
     return [u.label for u in base_utterances]
+
+
+def _load_train_utterances() -> list:
+    utterances_by_set: dict[str, list] = {}
+    for split_def in d.get_train_split_definitions():
+        utterances_by_set[str(split_def["set_name"])] = scan_split(Path(split_def["wav_root"]))
+
+    data_mode = getattr(d, "TRAIN_DATA_MODE", "clean_only")
+    probabilities = getattr(d, "TRAIN_DATA_PROBABILITIES", None) or {}
+    use_other_as_augmentation = getattr(d, "USE_OTHER_AS_AUGMENTATION", False)
+
+    if data_mode == "clean_only":
+        train_utterances = []
+        for utterances in utterances_by_set.values():
+            train_utterances.extend(utterances)
+        return train_utterances
+
+    if data_mode == "clean+other_prob":
+        if not use_other_as_augmentation:
+            train_utterances = []
+            for utterances in utterances_by_set.values():
+                train_utterances.extend(utterances)
+            return train_utterances
+
+        clean_utterances = []
+        other_utterances = []
+        for set_name, utterances in utterances_by_set.items():
+            if set_name == "other500":
+                other_utterances.extend(utterances)
+            else:
+                clean_utterances.extend(utterances)
+
+        clean_probability = float(probabilities.get("clean", 0.0))
+        other_probability = float(probabilities.get("other", 0.0))
+        if clean_probability <= 0 and other_probability <= 0:
+            raise ValueError("clean+other_prob requires a positive 'clean' or 'other' probability")
+        if clean_probability <= 0:
+            return other_utterances
+        if other_probability <= 0 or not other_utterances:
+            return clean_utterances
+
+        total_scale = min(
+            len(clean_utterances) / clean_probability,
+            len(other_utterances) / other_probability,
+        )
+        target_clean = max(1, int(total_scale * clean_probability))
+        target_other = max(1, int(total_scale * other_probability))
+        rng = random.Random(37)
+
+        sampled_clean = (
+            rng.sample(clean_utterances, target_clean)
+            if target_clean < len(clean_utterances)
+            else list(clean_utterances)
+        )
+        sampled_other = (
+            rng.sample(other_utterances, target_other)
+            if target_other < len(other_utterances)
+            else list(other_utterances)
+        )
+        return sampled_clean + sampled_other
+
+    if data_mode == "clean+esc+white":
+        train_utterances = []
+        for set_name, utterances in utterances_by_set.items():
+            if set_name == "other500" and use_other_as_augmentation:
+                continue
+            train_utterances.extend(utterances)
+        return train_utterances
+
+    raise ValueError(f"Unsupported TRAIN_DATA_MODE: {data_mode}")
 
 
 def _resolve_train_feature_roots(
@@ -154,6 +231,9 @@ def main():
     lr = t.LEARNING_RATE
     weight_decay = t.WEIGHT_DECAY
     train_feature_mode = d.TRAIN_FEATURE_MODE
+    train_data_mode = getattr(d, "TRAIN_DATA_MODE", "clean_only")
+    train_set_names = getattr(d, "TRAIN_SET_NAMES", ("clean100",))
+    train_data_probabilities = getattr(d, "TRAIN_DATA_PROBABILITIES", None)
     model_dropout = m.CONFORMER_DROPOUT if m.MODEL_NAME.lower() == "conformer" else m.DROPOUT
 
     run_name = e.EXP_NAME
@@ -169,7 +249,7 @@ def main():
     tb_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    train_utts = scan_split(d.TRAIN_ROOT)
+    train_utts = _load_train_utterances()
     train_label_map = build_label_map(train_utts)
     train_utts = attach_labels(train_utts, train_label_map)
 
@@ -181,7 +261,8 @@ def main():
     print(f"Run name: {run_name}")
     print(
         f"margin={margin} | P={p} | K={k} | emb_dim={emb_dim} | "
-        f"epochs={epochs} | lr={lr} | wd={weight_decay} | dropout={model_dropout}")
+        f"epochs={epochs} | lr={lr} | wd={weight_decay} | dropout={model_dropout} | "
+        f"train_sets={train_set_names} | data_mode={train_data_mode}")
     print("=" * 100)
 
     train_feature_probabilities = None
@@ -198,21 +279,41 @@ def main():
             for key, roots in train_feature_roots.items()
         )
         if d.is_probabilistic_train_feature_mode(train_feature_mode):
-            train_ds = RandomChoicePrecomputedFeatureDataset(
-                train_utts,
-                split_root=d.TRAIN_ROOT,
-                feature_roots=resolved_train_feature_roots,
-                probabilities=train_feature_probabilities)
+            train_feature_paths_by_source = [
+                {
+                    key: d.resolve_train_feature_path(utterance.path, key)
+                    for key in d.get_train_feature_root_keys(train_feature_mode)
+                }
+                for utterance in train_utts
+            ]
+            train_ds = ResolvedRandomChoicePrecomputedFeatureDataset(
+                train_feature_paths_by_source,
+                [utterance.label for utterance in train_utts],
+                probabilities=d.get_train_feature_probabilities(
+                    train_feature_mode,
+                    d.TRAIN_FEATURE_PROBABILITIES,
+                ),
+            )
         else:
             if d.TRAIN_FEATURE_PROBABILITIES is not None:
                 raise ValueError(
                     "TRAIN_FEATURE_PROBABILITIES can only be used with probabilistic "
                     "train feature modes such as 'clean|noise' or 'clean|noise|white'."
                 )
-            train_ds = PrecomputedFeatureDataset(
-                train_utts,
-                split_root=d.TRAIN_ROOT,
-                feat_root=[root for _name, root in resolved_train_feature_roots])
+            if train_feature_mode == "clean":
+                train_feat_paths = [
+                    d.resolve_train_clean_feature_path(utterance.path)
+                    for utterance in train_utts
+                ]
+                train_ds = ResolvedPrecomputedFeatureDataset(
+                    train_feat_paths,
+                    [utterance.label for utterance in train_utts],
+                )
+            else:
+                train_ds = PrecomputedFeatureDataset(
+                    train_utts,
+                    split_root=d.TRAIN_ROOT,
+                    feat_root=[root for _name, root in resolved_train_feature_roots])
         val_ds = PrecomputedFeatureDataset(
             val_utts,
             split_root=d.VAL_ROOT,
@@ -331,6 +432,9 @@ def main():
                 f"conformer_conv_kernel_size={m.CONFORMER_CONV_KERNEL_SIZE}",
                 f"conformer_num_blocks={m.CONFORMER_NUM_BLOCKS}",
                 f"train_feature_mode={train_feature_mode}",
+                f"train_data_mode={train_data_mode}",
+                f"train_set_names={train_set_names}",
+                f"train_data_probabilities={train_data_probabilities}",
                 f"train_feat_roots={train_feat_str}",
                 f"train_feature_probabilities={train_feature_probabilities}",
                 f"epochs={epochs}",
@@ -342,7 +446,7 @@ def main():
         0,
     )
 
-    patience = 5
+    patience = 8
     min_delta = 1e-4
     best_val_loss = float("inf")
     bad_epochs = 0
