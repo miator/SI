@@ -8,15 +8,17 @@ from tqdm import tqdm
 import torchaudio
 import torch
 
-OUT_WAV_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech_eval_standardized")
+OUT_WAV_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech_train_360_500_standardized")
 TARGET_SR = 16000
 TARGET_MONO = True
 
 SPLITS = {
-    "dev-clean": Path(r"C:\Users\User\Desktop\Data\dev-clean"),
-    "dev-other": Path(r"C:\Users\User\Desktop\Data\dev-other"),
-    "test-clean": Path(r"C:\Users\User\Desktop\Data\test-clean"),
-    "test-other": Path(r"C:\Users\User\Desktop\Data\test-other"),
+    "train-clean-360": Path(
+        r"C:\Users\User\Desktop\Data\train-clean-360\LibriSpeech\train-clean-360"
+    ),
+    # "train-other-500": Path(
+    #     r"C:\Users\User\Desktop\Data\train-other-500\LibriSpeech\train-other-500"
+    # ),
 }
 
 

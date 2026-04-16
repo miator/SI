@@ -11,13 +11,13 @@ import torch
 import torchaudio
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-# Eval splits that will be standardized first, then chunked into 3-second wavs.
-SRC_STD_WAV_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech_eval_standardized")
-OUT_CHUNKS_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech_eval_standardized_chunks_3s")
+# Train splits that will be standardized first, then chunked into 3-second wavs.
+SRC_STD_WAV_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech_train_360_500_standardized")
+OUT_CHUNKS_ROOT = Path(r"C:\Users\User\Desktop\Data\librispeech_train_360_500_standardized_chunks_3s")
 
-WRITE_DUPLICATE_PCM16_TREE = True
+WRITE_DUPLICATE_PCM16_TREE = False
 
-SPLITS = ["dev-clean", "dev-other", "test-clean", "test-other"]
+SPLITS = ["train-clean-360"]  # , "train-other-500"
 
 TARGET_SR = 16000
 CHUNK_SECONDS = 3.0
@@ -142,9 +142,7 @@ def process_one_file(task: Dict[str, Any]) -> List[ChunkRow]:
 # 4) BUILD TASK LIST FROM STANDARDIZED TREE
 def build_tasks() -> List[Dict[str, Any]]:
     """
-    Scan SRC_STD_WAV_ROOT for utterances:
-      SRC_STD_WAV_ROOT/<split>/<utt>.wav
-      or
+    Scan SRC_STD_WAV_ROOT for utterances with layout:
       SRC_STD_WAV_ROOT/<split>/<speaker>/<book>/<utt>.wav
     Return a list of dict tasks with extracted ids.
     """
@@ -160,21 +158,13 @@ def build_tasks() -> List[Dict[str, Any]]:
         for wav_path in wav_files:
             rel_parts = wav_path.relative_to(split_dir).parts
 
-            if len(rel_parts) == 1:
-                name_parts = wav_path.stem.split("-")
-                if len(name_parts) < 3:
-                    raise ValueError(
-                        f"Cannot infer speaker/book ids from flat wav filename: {wav_path.name}"
-                    )
-                speaker_id = name_parts[0]
-                book_id = name_parts[1]
-            elif len(rel_parts) >= 3:
-                speaker_id = rel_parts[0]
-                book_id = rel_parts[1]
-            else:
+            # Standardized layout must be exactly <speaker>/<book>/<utt>.wav.
+            if len(rel_parts) != 3:
                 raise ValueError(
                     f"Unsupported standardized wav layout under {split_dir}: {wav_path}"
                 )
+            speaker_id = rel_parts[0]
+            book_id = rel_parts[1]
 
             utt_id = wav_path.stem
             tasks.append(
