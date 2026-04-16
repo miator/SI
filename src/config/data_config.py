@@ -147,6 +147,25 @@ def resolve_train_feature_path(wav_path: Path, key: str) -> Path:
     )
 
 
+def resolve_train_feature_path_from_source_path(
+    source_path: Path,
+    source_key: str,
+    target_key: str,
+) -> Path:
+    source_path = Path(source_path)
+    for split_def in get_train_split_definitions():
+        source_root = get_train_split_feature_root(split_def, source_key)
+        try:
+            rel = source_path.relative_to(source_root)
+        except ValueError:
+            continue
+        return get_train_split_feature_root(split_def, target_key) / rel
+    raise ValueError(
+        "Source path is not under any configured train feature root "
+        f"for key {source_key!r}: {source_path}"
+    )
+
+
 def get_eval_split_definitions() -> dict[str, dict[str, Union[Path, float, bool, None, str]]]:
     return {
         "dev_clean": {
