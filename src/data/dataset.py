@@ -289,6 +289,109 @@ class PrecomputedFeatureDataset(Dataset):
         return feat, label
 
 
+class ResolvedPrecomputedFeatureDataset(Dataset):
+    """
+    Returns:
+        feat: (frames, n_feats)
+        label: scalar torch.long 64bit int
+
+    Expects each sample to already have a resolved feature path on disk.
+    """
+    def __init__(
+        self,
+        feature_paths: Sequence[PathLike],
+        labels: Sequence[int],
+    ):
+        self.feature_paths = [Path(path) for path in feature_paths]
+        self.labels = [int(label) for label in labels]
+
+        if len(self.feature_paths) != len(self.labels):
+            raise ValueError("feature_paths and labels must have the same length")
+
+        for path in self.feature_paths:
+            if not path.exists():
+                raise FileNotFoundError(f"Missing precomputed feature file: {path}")
+
+    def __len__(self) -> int:
+        return len(self.feature_paths)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        feat = load_feature_tensor(self.feature_paths[idx])
+        label = torch.tensor(self.labels[idx], dtype=torch.long)
+        return feat, label
+
+
+class ResolvedRandomChoicePrecomputedFeatureDataset(Dataset):
+    """
+    Returns:
+        feat: (frames, n_feats)
+        label: scalar torch.long 64bit int
+
+    Expects per-sample resolved feature paths grouped by source name
+    (for example "clean", "noise", "white") and randomly selects one
+    enabled source on each sample access.
+    """
+    def __init__(
+        self,
+        feature_paths_by_source: Sequence[dict[str, PathLike]],
+        labels: Sequence[int],
+        probabilities=None,
+    ):
+        if len(feature_paths_by_source) != len(labels):
+            raise ValueError("feature_paths_by_source and labels must have the same length")
+
+        available_source_names = sorted({
+            source_name
+            for sample_paths in feature_paths_by_source
+            for source_name in sample_paths
+        })
+        resolved_probabilities = _resolve_feature_probabilities(available_source_names, probabilities)
+        probability_by_source = {
+            source_name: probability
+            for source_name, probability in zip(available_source_names, resolved_probabilities)
+        }
+
+        self.feature_paths_by_index: list[list[Path]] = []
+        self.source_probabilities_by_index: list[torch.Tensor] = []
+        self.labels = [int(label) for label in labels]
+
+        for sample_paths in feature_paths_by_source:
+            enabled_paths: list[Path] = []
+            enabled_probabilities: list[float] = []
+
+            for source_name, path in sample_paths.items():
+                probability = probability_by_source.get(source_name, 0.0)
+                if probability <= 0:
+                    continue
+
+                resolved_path = Path(path)
+                if not resolved_path.exists():
+                    raise FileNotFoundError(f"Missing precomputed feature file: {resolved_path}")
+
+                enabled_paths.append(resolved_path)
+                enabled_probabilities.append(probability)
+
+            if not enabled_paths:
+                raise ValueError("Each sample must have at least one enabled feature path")
+
+            path_probabilities = torch.tensor(enabled_probabilities, dtype=torch.float32)
+            path_probabilities /= path_probabilities.sum()
+
+            self.feature_paths_by_index.append(enabled_paths)
+            self.source_probabilities_by_index.append(path_probabilities)
+
+    def __len__(self) -> int:
+        return len(self.feature_paths_by_index)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        feature_paths = self.feature_paths_by_index[idx]
+        path_probabilities = self.source_probabilities_by_index[idx]
+        path_idx = int(torch.multinomial(path_probabilities, num_samples=1).item())
+        feat = load_feature_tensor(feature_paths[path_idx])
+        label = torch.tensor(self.labels[idx], dtype=torch.long)
+        return feat, label
+
+
 class RandomChoicePrecomputedFeatureDataset(Dataset):
     """
     Returns:
