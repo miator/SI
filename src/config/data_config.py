@@ -1,28 +1,45 @@
 from pathlib import Path
 from typing import Optional, Union
 
-TRAIN_DATA_ROOT = Path(
+TRAIN_CLEAN100_DATA_ROOT = Path(
     r"C:\Users\User\Desktop\Data\LibriSpeech_standardized_chunks_3s"
+)
+TRAIN_360_500_DATA_ROOT = Path(
+    r"C:\Users\User\Desktop\Data\librispeech_train_360_500_standardized_chunks_3s"
 )
 EVAL_DATA_ROOT = Path(
     r"C:\Users\User\Desktop\Data\Librispeech_eval_standardized_chunks_3s"
 )
 
-TRAIN_WAV_ROOT = TRAIN_DATA_ROOT / "wav" / "train_clean100"
+TRAIN_CLEAN100_WAV_ROOT = TRAIN_CLEAN100_DATA_ROOT / "wav" / "train_clean100"
+TRAIN_CLEAN360_WAV_ROOT = TRAIN_360_500_DATA_ROOT / "wav" / "train-clean-360"
+TRAIN_OTHER500_WAV_ROOT = TRAIN_360_500_DATA_ROOT / "wav" / "train-other-500"
+TRAIN_WAV_ROOT = TRAIN_CLEAN100_WAV_ROOT
 EVAL_WAV_ROOT = EVAL_DATA_ROOT / "wav"
 DEV_CLEAN_WAV_ROOT = EVAL_WAV_ROOT / "dev-clean"
 DEV_OTHER_WAV_ROOT = EVAL_WAV_ROOT / "dev-other"
 TEST_CLEAN_WAV_ROOT = EVAL_WAV_ROOT / "test-clean"
 TEST_OTHER_WAV_ROOT = EVAL_WAV_ROOT / "test-other"
 
-TRAIN_PRECOMPUTED_ROOT = TRAIN_DATA_ROOT / "logmel_cache"
-TRAIN_CLEAN_FEAT_ROOT = TRAIN_PRECOMPUTED_ROOT / "train_clean100"
-TRAIN_NOISE_FEAT_ROOTS = (
-    TRAIN_PRECOMPUTED_ROOT / "train_noise_snr20",
-)
-TRAIN_WHITE_FEAT_ROOTS = (
-    TRAIN_PRECOMPUTED_ROOT / "train_white_snr25",
-)
+TRAIN_CLEAN100_PRECOMPUTED_ROOT = TRAIN_CLEAN100_DATA_ROOT / "logmel_cache"
+TRAIN_360_500_PRECOMPUTED_ROOT = TRAIN_360_500_DATA_ROOT / "logmel_cache"
+TRAIN_PRECOMPUTED_ROOT = TRAIN_CLEAN100_PRECOMPUTED_ROOT
+TRAIN_CLEAN100_FEAT_ROOT = TRAIN_CLEAN100_PRECOMPUTED_ROOT / "train_clean100"
+TRAIN_CLEAN360_FEAT_ROOT = TRAIN_360_500_PRECOMPUTED_ROOT / "train-clean-360"
+TRAIN_OTHER500_FEAT_ROOT = TRAIN_360_500_PRECOMPUTED_ROOT / "train-other-500"
+TRAIN_CLEAN_FEAT_ROOT = TRAIN_CLEAN100_FEAT_ROOT
+TRAIN_NOISE_FEAT_ROOTS_BY_SET = {
+    "clean100": TRAIN_CLEAN100_PRECOMPUTED_ROOT / "train_noise_snr20",
+    "clean360": TRAIN_360_500_PRECOMPUTED_ROOT / "train_noise_snr20",
+    "other500": TRAIN_360_500_PRECOMPUTED_ROOT / "train_noise_snr20",
+}
+TRAIN_WHITE_FEAT_ROOTS_BY_SET = {
+    "clean100": TRAIN_CLEAN100_PRECOMPUTED_ROOT / "train_white_snr25",
+    "clean360": TRAIN_360_500_PRECOMPUTED_ROOT / "train_white_snr25",
+    "other500": TRAIN_360_500_PRECOMPUTED_ROOT / "train_white_snr25",
+}
+TRAIN_NOISE_FEAT_ROOTS = (TRAIN_NOISE_FEAT_ROOTS_BY_SET["clean100"],)
+TRAIN_WHITE_FEAT_ROOTS = (TRAIN_WHITE_FEAT_ROOTS_BY_SET["clean100"],)
 
 EVAL_PRECOMPUTED_ROOT = EVAL_DATA_ROOT / "logmel_cache"
 DEV_CLEAN_FEAT_ROOT = EVAL_PRECOMPUTED_ROOT / "dev-clean"
@@ -35,7 +52,7 @@ ESC50_TRAIN_NOISE_ROOT = ESC50_NOISE_ROOT / "train-noise"
 ESC50_VAL_NOISE_ROOT = ESC50_NOISE_ROOT / "val-noise"
 ESC50_TEST_NOISE_ROOT = ESC50_NOISE_ROOT / "test-noise"
 
-TRAIN_SPLIT_NAME = "train_clean100"
+TRAIN_SPLIT_NAME = "train_clean100_clean360_other500"
 TRAIN_ROOT = TRAIN_WAV_ROOT
 VAL_ROOT = DEV_CLEAN_WAV_ROOT
 TEST_ROOT = TEST_CLEAN_WAV_ROOT
@@ -49,11 +66,85 @@ TEST_FEAT_ROOT = TEST_CLEAN_FEAT_ROOT
 USE_PRECOMPUTED_FEATURES = True
 TRAIN_FEATURE_MODE = "clean"
 TRAIN_FEATURE_PROBABILITIES: Optional[dict[str, float]] = None
+TRAIN_SET_NAMES: tuple[str, ...] = ("clean100",)
+TRAIN_DATA_MODE = "clean_only"
+TRAIN_DATA_PROBABILITIES: Optional[dict[str, float]] = None
+USE_OTHER_AS_AUGMENTATION = False
 
 
 def is_probabilistic_train_feature_mode(train_feature_mode: Optional[str] = None) -> bool:
     mode = TRAIN_FEATURE_MODE if train_feature_mode is None else train_feature_mode
     return "|" in mode
+
+
+def get_all_train_split_definitions() -> dict[str, dict[str, Path | str]]:
+    return {
+        "clean100": {
+            "set_name": "clean100",
+            "name": Path(TRAIN_CLEAN100_FEAT_ROOT).name,
+            "wav_root": TRAIN_CLEAN100_WAV_ROOT,
+            "precomputed_root": TRAIN_CLEAN100_PRECOMPUTED_ROOT,
+            "clean_feat_root": TRAIN_CLEAN100_FEAT_ROOT,
+        },
+        "clean360": {
+            "set_name": "clean360",
+            "name": Path(TRAIN_CLEAN360_FEAT_ROOT).name,
+            "wav_root": TRAIN_CLEAN360_WAV_ROOT,
+            "precomputed_root": TRAIN_360_500_PRECOMPUTED_ROOT,
+            "clean_feat_root": TRAIN_CLEAN360_FEAT_ROOT,
+        },
+        "other500": {
+            "set_name": "other500",
+            "name": Path(TRAIN_OTHER500_FEAT_ROOT).name,
+            "wav_root": TRAIN_OTHER500_WAV_ROOT,
+            "precomputed_root": TRAIN_360_500_PRECOMPUTED_ROOT,
+            "clean_feat_root": TRAIN_OTHER500_FEAT_ROOT,
+        },
+    }
+
+
+def get_train_split_definitions(
+    train_sets: Optional[tuple[str, ...]] = None,
+) -> tuple[dict[str, Path | str], ...]:
+    selected_sets = TRAIN_SET_NAMES if train_sets is None else train_sets
+    definitions = get_all_train_split_definitions()
+    unknown = sorted(set(selected_sets) - set(definitions))
+    if unknown:
+        raise ValueError(f"Unsupported train set names: {unknown}")
+    return tuple(definitions[name] for name in selected_sets)
+
+
+def resolve_train_clean_feature_path(wav_path: Path) -> Path:
+    return resolve_train_feature_path(wav_path, "clean")
+
+
+def get_train_split_feature_root(
+    split_def: dict[str, Path | str],
+    key: str,
+) -> Path:
+    set_name = str(split_def["set_name"])
+
+    if key == "clean":
+        return Path(split_def["clean_feat_root"])
+    if key == "noise":
+        return Path(TRAIN_NOISE_FEAT_ROOTS_BY_SET[set_name])
+    if key == "white":
+        return Path(TRAIN_WHITE_FEAT_ROOTS_BY_SET[set_name])
+    raise ValueError(f"Unsupported train feature root key: {key}")
+
+
+def resolve_train_feature_path(wav_path: Path, key: str) -> Path:
+    wav_path = Path(wav_path)
+    for split_def in get_train_split_definitions():
+        wav_root = Path(split_def["wav_root"])
+        try:
+            rel = wav_path.relative_to(wav_root)
+        except ValueError:
+            continue
+        return get_train_split_feature_root(split_def, key) / rel.with_suffix(".pt")
+    raise ValueError(
+        f"Wav path is not under any configured train split root for key {key!r}: {wav_path}"
+    )
 
 
 def get_eval_split_definitions() -> dict[str, dict[str, Union[Path, float, bool, None, str]]]:
@@ -123,13 +214,10 @@ def get_train_feature_root_keys(train_feature_mode: Optional[str] = None) -> tup
 
 
 def get_train_feat_roots_for_key(key: str) -> tuple[Path, ...]:
-    if key == "clean":
-        return (TRAIN_CLEAN_FEAT_ROOT,)
-    if key == "noise":
-        return tuple(TRAIN_NOISE_FEAT_ROOTS)
-    if key == "white":
-        return tuple(TRAIN_WHITE_FEAT_ROOTS)
-    raise ValueError(f"Unsupported train feature root key: {key}")
+    return tuple(
+        get_train_split_feature_root(split_def, key)
+        for split_def in get_train_split_definitions()
+    )
 
 
 def get_train_feat_roots(train_feature_mode: Optional[str] = None):
