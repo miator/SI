@@ -19,6 +19,23 @@ from src.data.features import LogMelExtraction
 
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
+TRAIN_360_500_PCM16_ROOT = Path(
+    r"C:\Users\User\Desktop\Data\librispeech_train_360_500_standardized_chunks_3s\wav"
+)
+TRAIN_360_500_LOGMEL_ROOT = Path(
+    r"C:\Users\User\Desktop\Data\librispeech_train_360_500_standardized_chunks_3s\logmel_cache"
+)
+TRAIN_360_500_SPLITS = {
+    "train-clean-360": {
+        "wav_root": TRAIN_360_500_PCM16_ROOT / "train-clean-360",
+        "feat_root": TRAIN_360_500_LOGMEL_ROOT / "train-clean-360",
+    },
+    # "train-other-500": {
+    #     "wav_root": TRAIN_360_500_PCM16_ROOT / "train-other-500",
+    #     "feat_root": TRAIN_360_500_LOGMEL_ROOT / "train-other-500",
+    # },
+}
+
 
 def _precompute_split(
         split_name: str,
@@ -30,6 +47,8 @@ def _precompute_split(
 ):
     utts = scan_split(wav_root)
     print(f"[{split_name}] files: {len(utts)}")
+    print("SCAN_ROOT =", wav_root)
+    print("SPEAKER_6937_EXISTS =", (Path(wav_root) / "6937").exists())
 
     for u in tqdm(utts, desc=f"precompute {split_name}"):
         out_path = wav_path_to_feature_path(u.path, wav_root, feat_root)
@@ -37,12 +56,22 @@ def _precompute_split(
         if out_path.exists() and not overwrite:
             continue
 
-        wav = read_audio_fast(u.path, f.SAMPLE_RATE)
-        if augmenter is not None:
-            wav = augmenter(wav)
+        try:
+            wav = read_audio_fast(u.path, f.SAMPLE_RATE)
 
-        feat = fe(wav)  # (frames, n_mels)
-        save_feature_tensor(out_path, feat)
+            if wav.numel() == 0 or wav.shape[-1] == 0:
+                print(f"Skipping empty wav: {u.path}")
+                continue
+
+            if augmenter is not None:
+                wav = augmenter(wav)
+
+            feat = fe(wav)  # (frames, n_mels)
+            save_feature_tensor(out_path, feat)
+
+        except Exception as e:
+            print(f"Skipping bad file: {u.path} | {e}")
+            continue
 
 
 def _precompute_augmented_eval_splits(fe, overwrite: bool = False):
@@ -103,10 +132,7 @@ def main():
     random.seed(SEED)
     torch.manual_seed(SEED)
 
-    train_mode = d.TRAIN_FEATURE_MODE
     overwrite = False
-    include_augmented_eval = True
-    train_feature_keys = d.get_train_feature_root_keys(train_mode)
 
     fe = LogMelExtraction(
         sample_rate=f.SAMPLE_RATE,
@@ -119,60 +145,11 @@ def main():
         eps=f.EPS,
     )
 
-    directories = [
-        *d.get_train_feat_roots(train_mode),
-        *[
-            split_def["feat_root"]
-            for split_def in d.get_eval_split_definitions().values()
-        ],
-    ]
+    directories = [split_def["feat_root"] for split_def in TRAIN_360_500_SPLITS.values()]
     for path in dict.fromkeys(directories):
         path.mkdir(parents=True, exist_ok=True)
 
-    if "clean" in train_feature_keys:
-        _maybe_precompute_train_split(
-            split_name="train_clean",
-            feat_root=d.TRAIN_CLEAN_FEAT_ROOT,
-            fe=fe,
-            overwrite=overwrite,
-        )
-
-    if "noise" in train_feature_keys:
-        augmenter = build_waveform_augmenter(
-            kind="noise",
-            sample_rate=f.SAMPLE_RATE,
-            noise_root=d.ESC50_TRAIN_NOISE_ROOT,
-            prob=a.NOISE_PROB,
-            snr_min=a.SNR_MIN,
-            snr_max=a.SNR_MAX,
-        )
-        _maybe_precompute_train_split(
-            split_name="train_noise",
-            feat_root=d.TRAIN_NOISE_FEAT_ROOT,
-            fe=fe,
-            augmenter=augmenter,
-            overwrite=overwrite,
-        )
-
-    if "white" in train_feature_keys:
-        augmenter = build_waveform_augmenter(
-            kind="white",
-            sample_rate=f.SAMPLE_RATE,
-            prob=a.WHITE_NOISE_PROB,
-            snr_min=a.WHITE_SNR_MIN,
-            snr_max=a.WHITE_SNR_MAX,
-        )
-        _maybe_precompute_train_split(
-            split_name="train_white",
-            feat_root=d.TRAIN_WHITE_FEAT_ROOT,
-            fe=fe,
-            augmenter=augmenter,
-            overwrite=overwrite,
-        )
-
-    for split_name, split_def in d.get_eval_split_definitions().items():
-        if split_def["is_noisy"]:
-            continue
+    for split_name, split_def in TRAIN_360_500_SPLITS.items():
         _precompute_split(
             split_name=split_name,
             wav_root=Path(split_def["wav_root"]),
@@ -180,9 +157,6 @@ def main():
             fe=fe,
             overwrite=overwrite,
         )
-
-    if include_augmented_eval:
-        _precompute_augmented_eval_splits(fe, overwrite=overwrite)
 
     print("Done.")
 
