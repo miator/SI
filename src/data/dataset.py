@@ -20,10 +20,10 @@ class Utterance:
     label: Optional[int] = None
 
 
-def scan_split(split_root: PathLike) -> list[Utterance]:
+def scan_split(split_root: PathLike, pattern: str = "*.wav") -> list[Utterance]:
     """
     Scan one split folder with layout:
-        split_root/speaker_id/*.wav
+        split_root/speaker_id/*
     Returns samples with original speaker IDs preserved
     """
     split_root = Path(split_root)
@@ -36,9 +36,9 @@ def scan_split(split_root: PathLike) -> list[Utterance]:
 
     for speaker_dir in speaker_dirs:
         speaker_id = speaker_dir.name
-        wav_paths = sorted(speaker_dir.glob("*.wav"))  # rglob if a speaker folder may contain nested subfolders
-        for wav_path in wav_paths:
-            utterances.append(Utterance(path=wav_path, speaker_id=speaker_id, label=None))
+        sample_paths = sorted(speaker_dir.glob(pattern))  # rglob if a speaker folder may contain nested subfolders
+        for sample_path in sample_paths:
+            utterances.append(Utterance(path=sample_path, speaker_id=speaker_id, label=None))
 
     return utterances
 
