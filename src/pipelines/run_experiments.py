@@ -22,6 +22,10 @@ DEFAULT_VERIFY_SPLITS = ("dev_clean", "dev_other", "test_clean", "test_other")
 class ExperimentSpec:
     name: str
     run_name: str
+    data_mode: str = "clean_only"  # "clean_only", "clean+other_prob", "clean+esc+white"
+    train_sets: tuple[str, ...] = ("clean100",)  # ("clean100", "clean360", "other500")
+    probabilities: Optional[dict[str, float]] = None  # {"clean": x, "other": y, "esc50": z, "white": w}
+    use_other_as_augmentation: bool = False
     train_feature_mode: Optional[str] = None
     train_feature_probabilities: Optional[dict[str, float]] = None
     train_augments: tuple[tuple[str, str, float, float, float], ...] = ()
@@ -52,83 +56,129 @@ class ExperimentSpec:
     verify_checkpoint_types: tuple[str, ...] = ("last", "best")  # best, last
     global_summary_name: str = "verify_summary_more_dataset.csv"
     save_verify_artifacts: bool = False
-    skip_precompute: bool = False
+    skip_precompute: bool = True
     run_train: bool = True
 
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
-    "2": ExperimentSpec(
-        name="cnn1d_emb256_m022_P8K8_lr00005  ++",
-        run_name="cnn1d_emb256_m022_P8K8_lr00005  ++",
+    "1": ExperimentSpec(
+        name="cnn1d_emb256_m022_P8K8_other500  ++++",
+        run_name="cnn1d_emb256_m022_P8K8_other500  ++++",
+        data_mode="clean_only",
+        train_sets=("other500",),
         train_feature_mode="clean",
         emb_dim=256,
+        margin=0.22,
         p=8,
         k=8,
-        lr=5e-4,
-    ),
-    "3": ExperimentSpec(
-        name="cnn1d_emb256_m022_P15K4_lr00005  ++",
-        run_name="cnn1d_emb256_m022_P15K4_lr00005  ++",
-        train_feature_mode="clean",
-        emb_dim=256,
-        p=15,
-        k=4,
-        lr=5e-4,
-    ),
-    "4": ExperimentSpec(
-        name="cnn1d_emb384_m022_P15K4_lr00003  ++",
-        run_name="cnn1d_emb384_m022_P15K4_lr00003  ++",
-        train_feature_mode="clean",
-        emb_dim=384,
-        p=15,
-        k=4,
-        lr=3e-4,
-    ),
-    "5": ExperimentSpec(
-        name="cnn1d_emb384_m022_P8K8_lr00003  ++",
-        run_name="cnn1d_emb384_m022_P8K8_lr00003  ++",
-        train_feature_mode="clean",
-        emb_dim=384,
-        p=8,
-        k=8,
-        lr=3e-4,
-    ),
-    "6": ExperimentSpec(
-        name="cnn1d_emb256_clean+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++",
-        run_name="cnn1d_emb256_clean+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++",
-        train_feature_mode="clean|noise|white",
-        emb_dim=256,
-        verify_checkpoint_types=("last", "best"),
-        train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
-        train_augments=(
-            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
+        model_name="cnn",
         skip_precompute=True,
+        resume_from_run="cnn1d_emb256_m022_P8K8_other500  ++++",
+        resume_checkpoint_type="last",
     ),
-    "7": ExperimentSpec(
-        name="cnn1d_emb384_lr00003_clean+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++",
-        run_name="cnn1d_emb384_lr00003_clean+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++",
-        train_feature_mode="clean|noise|white",
-        emb_dim=384,
-        lr=3e-4,
-        verify_checkpoint_types=("last", "best"),
-        train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
-        train_augments=(
-            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
-        skip_precompute=True,
-    ),
+    # "2": ExperimentSpec(
+    #     name="cnn1d_emb256_m022_P12K5_other500  ++++",
+    #     run_name="cnn1d_emb256_m022_P12K5_other500  ++++",
+    #     train_feature_mode="clean",
+    #     train_sets=("other500",),
+    #     emb_dim=256,
+    #     p=12,
+    #     k=5,
+    # ),
+    # "1": ExperimentSpec(
+    #     name="cnn1d_emb256_m022_P8K8_full960_clean  ++++",
+    #     run_name="cnn1d_emb256_m022_P8K8_full960_clean  ++++",
+    #     train_feature_mode="clean",
+    #     train_sets=("clean100", "clean360", "other500"),
+    #     emb_dim=256,
+    #     p=8,
+    #     k=8,
+    # ),
+    # "2": ExperimentSpec(
+    #     name="cnn1d_emb256_m022_P12K5_clean960  ++++",
+    #     run_name="cnn1d_emb256_m022_P12K5_clean960  ++++",
+    #     train_feature_mode="clean",
+    #     train_sets=("clean100", "clean360", "other500"),
+    #     emb_dim=256,
+    # ),
+    # "3": ExperimentSpec(
+    #     name="cnn1d_emb256_m022_P12K5_clean460+other+esc50_snr20+white_snr20-25  0.4 0.2 0.3 0.1  ++++",
+    #     run_name="cnn1d_emb256_m022_P12K5_clean460+other+esc50_snr20+white_snr20-25  0.4 0.2 0.3 0.1  ++++",
+    #     data_mode="clean+other_prob",
+    #     train_sets=("clean100", "clean360", "other500"),
+    #     probabilities={"clean": 2.0 / 3.0, "other": 1.0 / 3.0},
+    #     use_other_as_augmentation=True,
+    #     train_feature_mode="clean|noise|white",
+    #     train_feature_probabilities={"clean": 0.6, "noise": 0.3, "white": 0.1},
+    #     emb_dim=256,
+    # ),
+    # "4": ExperimentSpec(
+    #     name="cnn1d_emb256_m022_P12K5_clean960+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++++",
+    #     run_name="cnn_emb256_m022_P12K5_clean960+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++++",
+    #     data_mode="clean_only",
+    #     train_sets=("clean100", "clean360", "other500"),
+    #     train_feature_mode="clean|noise|white",
+    #     train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
+    #     emb_dim=256,
+    # ),
+    # "5": ExperimentSpec(
+    #     name="cnn1d_emb256_m022_P12K5_clean960+esc50_snr20  0.7 0.3  ++++",
+    #     run_name="cnn_emb256_m022_P12K5_clean960+esc50_snr20  0.7 0.3  ++++",
+    #     data_mode="clean_only",
+    #     train_sets=("clean100", "clean360", "other500"),
+    #     train_feature_mode="clean|noise|white",
+    #     train_feature_probabilities={"clean": 0.7, "noise": 0.3, "white": 0.0},
+    #     emb_dim=256,
+    # ),
     # "6": ExperimentSpec(
+    #     name="cnn1d_emb256_m022_P12K5_clean960+white_snr20-25  0.8 0.2  ++++",
+    #     run_name="cnn_emb256_m022_P12K5_clean960+white_snr20-25  0.8 0.2  ++++",
+    #     data_mode="clean_only",
+    #     train_sets=("clean100", "clean360", "other500"),
+    #     train_feature_mode="clean|noise|white",
+    #     train_feature_probabilities={"clean": 0.8, "noise": 0.0, "white": 0.2},
+    #     emb_dim=256,
+    # ),
+    # "7": ExperimentSpec(
+    #     name="cnn1d_emb256_m022_P12K5_clean460_other  0.7 0.3  ++++",
+    #     run_name="cnn_emb256_m022_P12K5_clean460_other  0.7 0.3  ++++",
+    #     data_mode="clean+other_prob",
+    #     train_sets=("clean100", "clean360", "other500"),
+    #     probabilities={"clean": 0.7, "other": 0.3},
+    #     use_other_as_augmentation=True,
+    #     emb_dim=256,
+    # ),
+    # "8": ExperimentSpec(
+    #     name="cnn1d_emb256_m022_P8K8_clean460+other  0.7 0.3  ++++",
+    #     run_name="cnn_emb256_m022_P8K8_clean460+other  0.7 0.3  ++++",
+    #     data_mode="clean+other_prob",
+    #     train_sets=("clean100", "clean360", "other500"),
+    #     probabilities={"clean": 0.7, "other": 0.3},
+    #     use_other_as_augmentation=True,
+    #     emb_dim=256,
+    #     p=8,
+    #     k=8,
+    # ),
+    # "9": ExperimentSpec(
+    #     name="cnn1d_emb256_m022_P12K5_clean460+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++++",
+    #     run_name="cnn_emb256_m022_P12K5_clean460+esc50_snr20+white_snr20-25  0.5 0.3 0.2  ++++",
+    #     data_mode="clean_only",
+    #     train_sets=("clean100", "clean360"),
+    #     train_feature_mode="clean|noise|white",
+    #     train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
+    #     emb_dim=256,
+    # ),
+    # "7": ExperimentSpec(
     #     name="cnn1d_emb192_m022_P8K8_lr00005  ++",
     #     run_name="cnn1d_emb192_m022_P8K8_lr00005  ++",
     #     train_feature_mode="clean",
     # ),
-    # "7": ExperimentSpec(
+    # "8": ExperimentSpec(
     #     name="cnn1d_emb192_m022_P15K4_lr00005  ++",
     #     run_name="cnn1d_emb192_m022_P15K4_lr00005  ++",
     #     train_feature_mode="clean",
     # ),
-    # "8": ExperimentSpec(
+    # "9": ExperimentSpec(
     #     name="clean+esc50_snr20+white_snr25  0.5 0.3 0.2  ++",
     #     run_name="clean+esc50_snr20+white_snr25 0.5 0.3 0.2  ++",
     #     train_feature_mode="clean|noise|white",
@@ -164,26 +214,26 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
     #         ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
     #         ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
     # ),
-    "11": ExperimentSpec(
-        name="conf_emb256_clean+esc50_snr20  0.7 0.3  ++",
-        run_name="conf_emb256_clean+esc50_snr20 0.7 0.3  ++",
-        train_feature_mode="clean|noise|white",
-        emb_dim=256,
-        train_feature_probabilities={"clean": 0.7, "noise": 0.3, "white": 0.0},
-        train_augments=(
-            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
-    ),
-    "12": ExperimentSpec(
-        name="conf_clean+white_snr20-25  0.8 0.2  ++",
-        run_name="conf_clean+white_snr20-25 0.8 0.2  ++",
-        train_feature_mode="clean|noise|white",
-        emb_dim=256,
-        train_feature_probabilities={"clean": 0.8, "noise": 0.0, "white": 0.2},
-        train_augments=(
-            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
-    ),
+    # "11": ExperimentSpec(
+    #     name="cnn1d_emb256_clean+esc50_snr20  0.7 0.3  ++",
+    #     run_name="cnn1d_emb256_clean+esc50_snr20 0.7 0.3  ++",
+    #     train_feature_mode="clean|noise|white",
+    #     emb_dim=256,
+    #     train_feature_probabilities={"clean": 0.7, "noise": 0.3, "white": 0.0},
+    #     train_augments=(
+    #         ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+    #         ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
+    # ),
+    # "12": ExperimentSpec(
+    #     name="cnn1d_clean+white_snr20-25  0.8 0.2  ++",
+    #     run_name="cnn1d_clean+white_snr20-25 0.8 0.2  ++",
+    #     train_feature_mode="clean|noise|white",
+    #     emb_dim=256,
+    #     train_feature_probabilities={"clean": 0.8, "noise": 0.0, "white": 0.2},
+    #     train_augments=(
+    #         ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+    #         ("white", "train_white_snr25", 1.0, 25.0, 25.0)),
+    # ),
 }
 
 
@@ -246,14 +296,35 @@ def get_resume_checkpoint_path(spec: ExperimentSpec) -> Optional[Path]:
     return Path(e.RUNS_DIR) / spec.resume_from_run / "checkpoints" / checkpoint_name
 
 
+def get_effective_train_feature_mode(spec: ExperimentSpec) -> str:
+    if spec.train_feature_mode is not None:
+        return spec.train_feature_mode
+    if spec.data_mode == "clean+esc+white":
+        return "clean|noise|white"
+    return "clean"
+
+
+def get_effective_train_feature_probabilities(spec: ExperimentSpec) -> Optional[dict[str, float]]:
+    if spec.train_feature_probabilities is not None:
+        return spec.train_feature_probabilities
+    if spec.data_mode != "clean+esc+white":
+        return None
+    probabilities = spec.probabilities or {}
+    return {
+        "clean": float(probabilities.get("clean", 0.0)),
+        "noise": float(probabilities.get("esc50", 0.0)),
+        "white": float(probabilities.get("white", 0.0)),
+    }
+
+
 def get_resolved_train_feature_probabilities(spec: ExperimentSpec) -> dict[str, float]:
     return d.get_train_feature_probabilities(
-        spec.train_feature_mode,
-        spec.train_feature_probabilities)
+        get_effective_train_feature_mode(spec),
+        get_effective_train_feature_probabilities(spec))
 
 
 def is_train_feature_enabled(spec: ExperimentSpec, key: str) -> bool:
-    mode_keys = d.get_train_feature_root_keys(spec.train_feature_mode)
+    mode_keys = d.get_train_feature_root_keys(get_effective_train_feature_mode(spec))
     if key not in mode_keys:
         return False
     if not d.is_probabilistic_train_feature_mode(spec.train_feature_mode):
@@ -265,7 +336,7 @@ def infer_train_augment_kind(spec: ExperimentSpec) -> Optional[str]:
     if spec.train_augment_kind is not None:
         return spec.train_augment_kind
 
-    mode_keys = [key for key in d.get_train_feature_root_keys(spec.train_feature_mode) if key != "clean"]
+    mode_keys = [key for key in d.get_train_feature_root_keys(get_effective_train_feature_mode(spec)) if key != "clean"]
     if len(mode_keys) == 1:
         return mode_keys[0]
     return None
@@ -328,7 +399,7 @@ def collect_train_precompute_requests(
     train_variants: list[tuple[str, str, float, float, float]] = []
 
     for spec in experiments:
-        mode_keys = d.get_train_feature_root_keys(spec.train_feature_mode)
+        mode_keys = d.get_train_feature_root_keys(get_effective_train_feature_mode(spec))
         if "clean" in mode_keys and is_train_feature_enabled(spec, "clean"):
             need_train_clean = True
 
@@ -338,7 +409,7 @@ def collect_train_precompute_requests(
             if augment_kind not in mode_keys:
                 raise ValueError(
                     f"Experiment {spec.name} defines train augment {augment_kind!r} "
-                    f"but train_feature_mode is {spec.train_feature_mode!r}.")
+                    f"but train_feature_mode is {get_effective_train_feature_mode(spec)!r}.")
             train_variants.append(
                 (augment_kind,
                  feature_subdir,
@@ -379,13 +450,15 @@ for path in (
     path.mkdir(parents=True, exist_ok=True)
 
 if {need_train_clean!r}:
-    d.TRAIN_CLEAN_FEAT_ROOT.mkdir(parents=True, exist_ok=True)
-    p._precompute_split(
-        split_name="train_clean",
-        wav_root=Path(d.TRAIN_ROOT),
-        feat_root=d.TRAIN_CLEAN_FEAT_ROOT,
-        fe=fe,
-        overwrite={overwrite!r})
+    for split_def in d.get_train_split_definitions():
+        feat_root = Path(split_def["clean_feat_root"])
+        feat_root.mkdir(parents=True, exist_ok=True)
+        p._precompute_split(
+            split_name=f"train_clean:{{split_def['set_name']}}",
+            wav_root=Path(split_def["wav_root"]),
+            feat_root=feat_root,
+            fe=fe,
+            overwrite={overwrite!r})
 
 for split_name, split_def in d.get_eval_split_definitions().items():
     if split_def["is_noisy"]:
@@ -398,22 +471,23 @@ for split_name, split_def in d.get_eval_split_definitions().items():
         overwrite={overwrite!r})
 
 for augment_kind, feature_subdir, noise_prob, snr_min, snr_max in {list(train_variants)!r}:
-    feat_root = Path(d.PRECOMPUTED_ROOT) / feature_subdir
-    feat_root.mkdir(parents=True, exist_ok=True)
-    augmenter = build_waveform_augmenter(
-        kind=augment_kind,
-        sample_rate=f.SAMPLE_RATE,
-        noise_root=d.ESC50_TRAIN_NOISE_ROOT if augment_kind == "noise" else None,
-        prob=noise_prob,
-        snr_min=snr_min,
-        snr_max=snr_max)
-    p._precompute_split(
-        split_name=f"train_{{augment_kind}}:{{feature_subdir}}",
-        wav_root=Path(d.TRAIN_ROOT),
-        feat_root=feat_root,
-        fe=fe,
-        augmenter=augmenter,
-        overwrite={overwrite!r})
+    for split_def in d.get_train_split_definitions():
+        feat_root = Path(split_def["precomputed_root"]) / feature_subdir
+        feat_root.mkdir(parents=True, exist_ok=True)
+        augmenter = build_waveform_augmenter(
+            kind=augment_kind,
+            sample_rate=f.SAMPLE_RATE,
+            noise_root=d.ESC50_TRAIN_NOISE_ROOT if augment_kind == "noise" else None,
+            prob=noise_prob,
+            snr_min=snr_min,
+            snr_max=snr_max)
+        p._precompute_split(
+            split_name=f"train_{{augment_kind}}:{{split_def['set_name']}}:{{feature_subdir}}",
+            wav_root=Path(split_def["wav_root"]),
+            feat_root=feat_root,
+            fe=fe,
+            augmenter=augmenter,
+            overwrite={overwrite!r})
 
 p._precompute_augmented_eval_splits(fe, overwrite={overwrite!r})
 """
@@ -433,13 +507,20 @@ e.configure_experiment(
     exp_name={spec.run_name!r},
     runs_dir=e.DEFAULT_RUNS_DIR),
 
-d.TRAIN_FEATURE_MODE = {spec.train_feature_mode!r}
-d.TRAIN_FEATURE_PROBABILITIES = {spec.train_feature_probabilities!r}
+d.TRAIN_SET_NAMES = {spec.train_sets!r}
+d.TRAIN_DATA_MODE = {spec.data_mode!r}
+d.TRAIN_DATA_PROBABILITIES = {spec.probabilities!r}
+d.USE_OTHER_AS_AUGMENTATION = {spec.use_other_as_augmentation!r}
+d.TRAIN_FEATURE_MODE = {get_effective_train_feature_mode(spec)!r}
+d.TRAIN_FEATURE_PROBABILITIES = {get_effective_train_feature_probabilities(spec)!r}
 train_feature_overrides = {get_train_feature_overrides(spec)!r}
-if "noise" in train_feature_overrides:
-    d.TRAIN_NOISE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / train_feature_overrides["noise"]
-if "white" in train_feature_overrides:
-    d.TRAIN_WHITE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / train_feature_overrides["white"]
+for split_def in d.get_train_split_definitions():
+    set_name = str(split_def["set_name"])
+    precomputed_root = Path(split_def["precomputed_root"])
+    if "noise" in train_feature_overrides:
+        d.TRAIN_NOISE_FEAT_ROOTS_BY_SET[set_name] = precomputed_root / train_feature_overrides["noise"]
+    if "white" in train_feature_overrides:
+        d.TRAIN_WHITE_FEAT_ROOTS_BY_SET[set_name] = precomputed_root / train_feature_overrides["white"]
 
 t.MARGIN = {spec.margin!r}
 t.P = {spec.p!r}
@@ -489,6 +570,12 @@ e.configure_experiment(
     exp_name={spec.run_name!r},
     runs_dir=e.DEFAULT_RUNS_DIR),
 
+d.TRAIN_SET_NAMES = {spec.train_sets!r}
+d.TRAIN_DATA_MODE = {spec.data_mode!r}
+d.TRAIN_DATA_PROBABILITIES = {spec.probabilities!r}
+d.USE_OTHER_AS_AUGMENTATION = {spec.use_other_as_augmentation!r}
+d.TRAIN_FEATURE_MODE = {get_effective_train_feature_mode(spec)!r}
+d.TRAIN_FEATURE_PROBABILITIES = {get_effective_train_feature_probabilities(spec)!r}
 m.EMB_DIM = {spec.emb_dim!r}
 m.MODEL_NAME = {spec.model_name!r}
 m.DROPOUT = {spec.dropout!r}
@@ -499,10 +586,13 @@ m.CONFORMER_FF_MULT = {spec.conformer_ff_mult!r}
 m.CONFORMER_CONV_KERNEL_SIZE = {spec.conformer_conv_kernel_size!r}
 m.CONFORMER_NUM_BLOCKS = {spec.conformer_num_blocks!r}
 train_feature_overrides = {get_train_feature_overrides(spec)!r}
-if "noise" in train_feature_overrides:
-    d.TRAIN_NOISE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / train_feature_overrides["noise"]
-if "white" in train_feature_overrides:
-    d.TRAIN_WHITE_FEAT_ROOT = Path(d.PRECOMPUTED_ROOT) / train_feature_overrides["white"]
+for split_def in d.get_train_split_definitions():
+    set_name = str(split_def["set_name"])
+    precomputed_root = Path(split_def["precomputed_root"])
+    if "noise" in train_feature_overrides:
+        d.TRAIN_NOISE_FEAT_ROOTS_BY_SET[set_name] = precomputed_root / train_feature_overrides["noise"]
+    if "white" in train_feature_overrides:
+        d.TRAIN_WHITE_FEAT_ROOTS_BY_SET[set_name] = precomputed_root / train_feature_overrides["white"]
 
 run_root = Path(e.EXP_DIR)
 verify_dir = run_root / "results" / "verify"
@@ -570,7 +660,7 @@ def main() -> None:
         for spec in experiments
         if spec.run_train
         and not args.skip_train
-        and not get_last_checkpoint_path(spec).exists()]
+        and (spec.resume_from_run is not None or not get_last_checkpoint_path(spec).exists())]
     need_train_clean, train_variants = collect_train_precompute_requests(train_experiments)
 
     should_skip_precompute = args.skip_precompute or all(spec.skip_precompute for spec in experiments)
@@ -596,13 +686,14 @@ def main() -> None:
 
         if spec.run_train and not args.skip_train:
             last_checkpoint = get_last_checkpoint_path(spec)
+            should_resume = spec.resume_from_run is not None
             training_collapsed = False
-            if last_checkpoint.exists():
+            if last_checkpoint.exists() and not should_resume:
                 print(f"Skipping training because checkpoint already exists: {last_checkpoint}")
             else:
                 print(
                     f"Training {spec.run_name} with precomputed mode "
-                    f"{spec.train_feature_mode!r}...")
+                    f"{get_effective_train_feature_mode(spec)!r}...")
                 result = train_experiment(spec)
                 if result.returncode == COLLAPSED_TRAINING_EXIT_CODE:
                     training_collapsed = True
