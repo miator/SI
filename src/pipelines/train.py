@@ -16,16 +16,12 @@ from src.config import feature_config as f
 from src.config import model_config as m
 from src.config import train_config as t
 from src.data.dataset import (
-    AudioDataset,
-    PrecomputedFeatureDataset,
-    RandomChoicePrecomputedFeatureDataset,
     ResolvedPrecomputedFeatureDataset,
     ResolvedRandomChoicePrecomputedFeatureDataset,
     pad_trunc_collate_fn,
     scan_split,
     build_label_map,
     attach_labels)
-from src.data.features import LogMelExtraction
 from src.models.model import build_embedding_model
 from src.models.triplet import BatchHardTripletLoss
 from src.models.samplers import PKSampler
@@ -67,21 +63,26 @@ def _emit_collapse_status(exc: CollapsedTrainingError) -> None:
 
 
 def _labels_for_sampler(dataset, base_utterances) -> list[int]:
-    if isinstance(dataset, RandomChoicePrecomputedFeatureDataset):
-        return list(dataset.labels)
     if isinstance(dataset, ResolvedPrecomputedFeatureDataset):
         return list(dataset.labels)
     if isinstance(dataset, ResolvedRandomChoicePrecomputedFeatureDataset):
         return list(dataset.labels)
-    if isinstance(dataset, PrecomputedFeatureDataset):
-        return list(dataset.labels) * dataset.num_feature_roots
     return [u.label for u in base_utterances]
 
 
-def _load_train_utterances() -> list:
+def _get_canonical_train_feature_key(train_feature_mode: str) -> str:
+    feature_keys = d.get_train_feature_root_keys(train_feature_mode)
+    if "clean" in feature_keys:
+        return "clean"
+    return feature_keys[0]
+
+
+def _load_train_utterances(train_feature_mode: str) -> list:
     utterances_by_set: dict[str, list] = {}
+    canonical_key = _get_canonical_train_feature_key(train_feature_mode)
     for split_def in d.get_train_split_definitions():
-        utterances_by_set[str(split_def["set_name"])] = scan_split(Path(split_def["wav_root"]))
+        feat_root = d.get_train_split_feature_root(split_def, canonical_key)
+        utterances_by_set[str(split_def["set_name"])] = scan_split(feat_root, pattern="*.pt")
 
     data_mode = getattr(d, "TRAIN_DATA_MODE", "clean_only")
     probabilities = getattr(d, "TRAIN_DATA_PROBABILITIES", None) or {}
@@ -249,11 +250,11 @@ def main():
     tb_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    train_utts = _load_train_utterances()
+    train_utts = _load_train_utterances(train_feature_mode)
     train_label_map = build_label_map(train_utts)
     train_utts = attach_labels(train_utts, train_label_map)
 
-    val_utts = scan_split(d.VAL_ROOT)
+    val_utts = scan_split(d.VAL_FEAT_ROOT, pattern="*.pt")
     val_label_map = build_label_map(val_utts)
     val_utts = attach_labels(val_utts, val_label_map)
 
@@ -267,77 +268,73 @@ def main():
 
     train_feature_probabilities = None
 
-    if d.USE_PRECOMPUTED_FEATURES:
-        train_feature_roots, resolved_train_feature_roots, train_feature_probabilities = (
-            _resolve_train_feature_roots(
+    if not d.USE_PRECOMPUTED_FEATURES:
+        raise RuntimeError("Training requires precomputed features. On-the-fly WAV loading is no longer supported.")
+
+    train_feature_roots, resolved_train_feature_roots, train_feature_probabilities = (
+        _resolve_train_feature_roots(
+            train_feature_mode,
+            d.TRAIN_FEATURE_PROBABILITIES,
+        )
+    )
+    train_feat_str = ",".join(
+        f"{key}:{list(roots)}"
+        for key, roots in train_feature_roots.items()
+    )
+    canonical_feature_key = _get_canonical_train_feature_key(train_feature_mode)
+    if d.is_probabilistic_train_feature_mode(train_feature_mode):
+        train_feature_paths_by_source = [
+            {
+                key: d.resolve_train_feature_path_from_source_path(
+                    utterance.path,
+                    canonical_feature_key,
+                    key,
+                )
+                for key in d.get_train_feature_root_keys(train_feature_mode)
+            }
+            for utterance in train_utts
+        ]
+        train_ds = ResolvedRandomChoicePrecomputedFeatureDataset(
+            train_feature_paths_by_source,
+            [utterance.label for utterance in train_utts],
+            probabilities=d.get_train_feature_probabilities(
                 train_feature_mode,
                 d.TRAIN_FEATURE_PROBABILITIES,
-            )
+            ),
         )
-        train_feat_str = ",".join(
-            f"{key}:{list(roots)}"
-            for key, roots in train_feature_roots.items()
-        )
-        if d.is_probabilistic_train_feature_mode(train_feature_mode):
-            train_feature_paths_by_source = [
-                {
-                    key: d.resolve_train_feature_path(utterance.path, key)
-                    for key in d.get_train_feature_root_keys(train_feature_mode)
-                }
-                for utterance in train_utts
-            ]
-            train_ds = ResolvedRandomChoicePrecomputedFeatureDataset(
-                train_feature_paths_by_source,
-                [utterance.label for utterance in train_utts],
-                probabilities=d.get_train_feature_probabilities(
-                    train_feature_mode,
-                    d.TRAIN_FEATURE_PROBABILITIES,
-                ),
-            )
-        else:
-            if d.TRAIN_FEATURE_PROBABILITIES is not None:
-                raise ValueError(
-                    "TRAIN_FEATURE_PROBABILITIES can only be used with probabilistic "
-                    "train feature modes such as 'clean|noise' or 'clean|noise|white'."
-                )
-            if train_feature_mode == "clean":
-                train_feat_paths = [
-                    d.resolve_train_clean_feature_path(utterance.path)
-                    for utterance in train_utts
-                ]
-                train_ds = ResolvedPrecomputedFeatureDataset(
-                    train_feat_paths,
-                    [utterance.label for utterance in train_utts],
-                )
-            else:
-                train_ds = PrecomputedFeatureDataset(
-                    train_utts,
-                    split_root=d.TRAIN_ROOT,
-                    feat_root=[root for _name, root in resolved_train_feature_roots])
-        val_ds = PrecomputedFeatureDataset(
-            val_utts,
-            split_root=d.VAL_ROOT,
-            feat_root=d.VAL_FEAT_ROOT)
-        print(
-            f"Using precomputed features: "
-            f"train={train_feature_roots} | "
-            f"train_probs={train_feature_probabilities} | "
-            f"val={d.VAL_FEAT_ROOT}")
     else:
-        train_feat_str = "on_the_fly"
-        fe = LogMelExtraction(
-            sample_rate=f.SAMPLE_RATE,
-            n_fft=f.N_FFT,
-            win_length=f.WIN_LENGTH,
-            hop_length=f.HOP_LENGTH,
-            n_mels=f.N_MELS,
-            f_min=f.FMIN,
-            f_max=f.FMAX,
-            eps=f.EPS)
+        if d.TRAIN_FEATURE_PROBABILITIES is not None:
+            raise ValueError(
+                "TRAIN_FEATURE_PROBABILITIES can only be used with probabilistic "
+                "train feature modes such as 'clean|noise' or 'clean|noise|white'."
+            )
+        train_feature_keys = d.get_train_feature_root_keys(train_feature_mode)
+        train_feat_paths: list[Path] = []
+        train_labels: list[int] = []
+        for utterance in train_utts:
+            for key in train_feature_keys:
+                train_feat_paths.append(
+                    d.resolve_train_feature_path_from_source_path(
+                        utterance.path,
+                        canonical_feature_key,
+                        key,
+                    )
+                )
+                train_labels.append(int(utterance.label))
+        train_ds = ResolvedPrecomputedFeatureDataset(
+            train_feat_paths,
+            train_labels,
+        )
 
-        train_ds = AudioDataset(train_utts, f.SAMPLE_RATE, fe)
-        val_ds = AudioDataset(val_utts, f.SAMPLE_RATE, fe)
-        print("Using on-the-fly log-mel extraction.")
+    val_ds = ResolvedPrecomputedFeatureDataset(
+        [utterance.path for utterance in val_utts],
+        [utterance.label for utterance in val_utts],
+    )
+    print(
+        f"Using precomputed features: "
+        f"train={train_feature_roots} | "
+        f"train_probs={train_feature_probabilities} | "
+        f"val={d.VAL_FEAT_ROOT}")
 
     train_labels = _labels_for_sampler(train_ds, train_utts)
     train_sampler = PKSampler(train_labels, P=p, K=k, seed=37)

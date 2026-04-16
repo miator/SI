@@ -3,7 +3,7 @@ import random
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
-from typing import Iterable, Optional, Callable, Union
+from typing import Iterable
 
 import torch
 import torch.nn.functional as F
@@ -12,8 +12,6 @@ from tqdm import tqdm
 
 from src.data.dataset import (
     scan_split,
-    read_audio_fast,
-    wav_path_to_feature_path,
     load_feature_tensor)
 from src.config import data_config as d
 from src.config import experiment_config as e
@@ -21,7 +19,6 @@ from src.config import feature_config as f
 from src.config import model_config as m
 from src.config import train_config as t
 
-from src.data.features import LogMelExtraction
 from src.models.model import build_embedding_model
 from src.metrics import compute_roc_auc_eer
 
@@ -160,43 +157,16 @@ class VerificationDataset(Dataset):
     """
     Dataset for embedding extraction on verification splits.
     Returns feature tensor, original speaker_id, and path.
-    Can read either raw WAVs or precomputed .pt log-mel tensors.
     """
-    def __init__(
-            self,
-            utterances,
-            sample_rate: Optional[int] = None,
-            feature_extractor: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
-            split_root: Optional[Union[Path, str]] = None,
-            feat_root: Optional[Union[Path, str]] = None):
-
+    def __init__(self, utterances):
         self.utterances = list(utterances)
-        self.sample_rate = sample_rate
-        self.fe = feature_extractor
-        self.split_root = Path(split_root) if split_root is not None else None
-        self.feat_root = Path(feat_root) if feat_root is not None else None
-
-        using_precomputed = self.split_root is not None or self.feat_root is not None
-        if using_precomputed and (self.split_root is None or self.feat_root is None):
-            raise ValueError("Both split_root and feat_root must be provided for precomputed features.")
-        if not using_precomputed and (self.sample_rate is None or self.fe is None):
-            raise ValueError("sample_rate and feature_extractor must be provided for on-the-fly features.")
 
     def __len__(self) -> int:
         return len(self.utterances)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, str, str]:
         u = self.utterances[idx]
-
-        if self.feat_root is not None:
-            feat_path = wav_path_to_feature_path(u.path, self.split_root, self.feat_root)
-            if not feat_path.exists():
-                raise FileNotFoundError(f"Missing precomputed feature file: {feat_path}")
-            feat = load_feature_tensor(feat_path)
-        else:
-            wav = read_audio_fast(u.path, self.sample_rate)
-            feat = self.fe(wav)
-
+        feat = load_feature_tensor(u.path)
         return feat, u.speaker_id, str(u.path)
 
 
@@ -310,7 +280,6 @@ def evaluate_split(
     model: torch.nn.Module,
     split_name: str,
     checkpoint_type: str,
-    split_root: Path,
     feat_root: Path,
     device: str,
     output_dir: Path,
@@ -320,32 +289,15 @@ def evaluate_split(
     seed: int = 37,
     save_artifacts: bool = False
 ):
-
-    utterances = scan_split(split_root)
+    utterances = scan_split(feat_root, pattern="*.pt")
     if len(utterances) == 0:
         raise RuntimeError(f"No utterances found in split: {split_name}")
 
-    if d.USE_PRECOMPUTED_FEATURES:
-        ds = VerificationDataset(
-            utterances,
-            split_root=split_root,
-            feat_root=feat_root)
-        print(f"Using precomputed log-mel features for {split_name}.")
-    else:
-        fe = LogMelExtraction(
-            sample_rate=f.SAMPLE_RATE,
-            n_fft=f.N_FFT,
-            win_length=f.WIN_LENGTH,
-            hop_length=f.HOP_LENGTH,
-            n_mels=f.N_MELS,
-            f_min=f.FMIN,
-            f_max=f.FMAX,
-            eps=f.EPS)
-        ds = VerificationDataset(
-            utterances,
-            sample_rate=f.SAMPLE_RATE,
-            feature_extractor=fe)
-        print(f"Using on-the-fly log-mel extraction for {split_name}.")
+    if not d.USE_PRECOMPUTED_FEATURES:
+        raise RuntimeError("Verification requires precomputed features. On-the-fly WAV loading is no longer supported.")
+
+    ds = VerificationDataset(utterances)
+    print(f"Using precomputed log-mel features for {split_name}.")
 
     collate = partial(pad_trunc_collate_verify, max_frames=f.MAX_FRAMES)
 
@@ -465,7 +417,6 @@ def main():
             model=model,
             split_name=split_name,
             checkpoint_type=checkpoint_type,
-            split_root=Path(split_def["wav_root"]),
             feat_root=Path(split_def["feat_root"]),
             device=device,
             output_dir=verify_dir,
