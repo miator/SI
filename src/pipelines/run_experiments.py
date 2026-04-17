@@ -34,7 +34,7 @@ class ExperimentSpec:
     snr_min: Optional[float] = None
     snr_max: Optional[float] = None
     train_feature_subdir: Optional[str] = None
-    emb_dim: int = 192
+    emb_dim: int = 256
     model_name: str = "cnn"  # conformer, cnn
     margin: float = 0.22
     p: int = 12
@@ -43,12 +43,12 @@ class ExperimentSpec:
     weight_decay: float = 1e-4
     epochs: int = 30
     dropout: float = 0.3
-    conformer_dropout: float = 0.1
+    conformer_dropout: float = 0.4
     conformer_d_model: int = 144
     conformer_num_heads: int = 4
     conformer_ff_mult: int = 4
     conformer_conv_kernel_size: int = 31
-    conformer_num_blocks: int = 4
+    conformer_num_blocks: int = 3
     collapse_patience: int = 3
     resume_from_run: Optional[str] = None
     resume_checkpoint_type: str = "best"
@@ -61,21 +61,169 @@ class ExperimentSpec:
 
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
-    "1": ExperimentSpec(
-        name="cnn1d_emb256_m022_P8K8_other500  ++++",
-        run_name="cnn1d_emb256_m022_P8K8_other500  ++++",
+    "cnn_1": ExperimentSpec(
+        name="cnn_emb256_m022_P12K5_clean960",
+        run_name="cnn_emb256_m022_P12K5_clean960",
+        model_name="cnn",
+        p=12,
+        k=5,
         data_mode="clean_only",
-        train_sets=("other500",),
+        train_sets=("clean100", "clean360", "other500"),
         train_feature_mode="clean",
-        emb_dim=256,
-        margin=0.22,
+        skip_precompute=True,
+    ),
+    "cnn_2": ExperimentSpec(
+        name="cnn_emb256_m022_P8K8_full960_clean",
+        run_name="cnn_emb256_m022_P8K8_full960_clean",
+        model_name="cnn",
         p=8,
         k=8,
-        model_name="cnn",
+        data_mode="clean_only",
+        train_sets=("clean100", "clean360", "other500"),
+        train_feature_mode="clean",
         skip_precompute=True,
-        resume_from_run="cnn1d_emb256_m022_P8K8_other500  ++++",
-        resume_checkpoint_type="last",
     ),
+    "cnn_3": ExperimentSpec(
+        name="cnn_emb256_m022_P12K5_full960_clean_esc20_white25_p503020",
+        run_name="cnn_emb256_m022_P12K5_full960_clean_esc20_white25_p503020",
+        model_name="cnn",
+        p=12,
+        k=5,
+        data_mode="clean_only",
+        train_sets=("clean100", "clean360", "other500"),
+        train_feature_mode="clean|noise|white",
+        train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
+        train_augments=(
+            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+        ),
+        skip_precompute=True,
+    ),
+    "cnn_4": ExperimentSpec(
+        name="cnn_emb256_m022_P12K5_full960_clean_esc20_p7030",
+        run_name="cnn_emb256_m022_P12K5_full960_clean_esc20_p7030",
+        model_name="cnn",
+        p=12,
+        k=5,
+        data_mode="clean_only",
+        train_sets=("clean100", "clean360", "other500"),
+        train_feature_mode="clean|noise|white",
+        train_feature_probabilities={"clean": 0.7, "noise": 0.3, "white": 0.0},
+        train_augments=(
+            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+        ),
+        skip_precompute=True,
+    ),
+    "cnn_5": ExperimentSpec(
+        name="cnn_emb256_m022_P12K5_full960_clean_white25_p8020",
+        run_name="cnn_emb256_m022_P12K5_full960_clean_white25_p8020",
+        model_name="cnn",
+        p=12,
+        k=5,
+        data_mode="clean_only",
+        train_sets=("clean100", "clean360", "other500"),
+        train_feature_mode="clean|noise|white",
+        train_feature_probabilities={"clean": 0.8, "noise": 0.0, "white": 0.2},
+        train_augments=(
+            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+        ),
+        skip_precompute=True,
+    ),
+    "cnn_6": ExperimentSpec(
+        name="cnn_emb256_m022_P12K5_clean460_other_p7030",
+        run_name="cnn_emb256_m022_P12K5_clean460_other_p7030",
+        model_name="cnn",
+        p=12,
+        k=5,
+        data_mode="clean+other_prob",
+        train_sets=("clean100", "clean360", "other500"),
+        probabilities={"clean": 0.7, "other": 0.3},
+        use_other_as_augmentation=True,
+        train_feature_mode="clean",
+        skip_precompute=True,
+    ),
+
+    "conf_1": ExperimentSpec(
+        name="conf_emb256_m022_P12K5_full960_clean",
+        run_name="conf_emb256_m022_P12K5_full960_clean",
+        model_name="conformer",
+        p=12,
+        k=5,
+        lr=5e-5,
+        data_mode="clean_only",
+        train_sets=("clean100", "clean360", "other500"),
+        train_feature_mode="clean",
+        skip_precompute=True,
+    ),
+    "conf_2": ExperimentSpec(
+        name="conf_emb256_m022_P12K5_full960_clean_esc20_p8020",
+        run_name="conf_emb256_m022_P12K5_full960_clean_esc20_p8020",
+        model_name="conformer",
+        p=12,
+        k=5,
+        lr=5e-5,
+        data_mode="clean_only",
+        train_sets=("clean100", "clean360", "other500"),
+        train_feature_mode="clean|noise|white",
+        train_feature_probabilities={"clean": 0.8, "noise": 0.2, "white": 0.0},
+        train_augments=(
+            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+        ),
+        skip_precompute=True,
+    ),
+    "conf_3": ExperimentSpec(
+        name="conf_emb256_m022_P12K5_full960_clean_esc20_white25_p701010",
+        run_name="conf_emb256_m022_P12K5_full960_clean_esc20_white25_p701010",
+        model_name="conformer",
+        p=12,
+        k=5,
+        lr=5e-5,
+        data_mode="clean_only",
+        train_sets=("clean100", "clean360", "other500"),
+        train_feature_mode="clean|noise|white",
+        train_feature_probabilities={"clean": 0.7, "noise": 0.1, "white": 0.1},
+        train_augments=(
+            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+        ),
+        skip_precompute=True,
+    ),
+    "conf_4": ExperimentSpec(
+        name="conf_emb256_m022_P12K5_full960_clean_esc20_white25_p503020",
+        run_name="conf_emb256_m022_P12K5_full960_clean_esc20_white25_p503020",
+        model_name="conformer",
+        p=12,
+        k=5,
+        lr=5e-5,
+        data_mode="clean_only",
+        train_sets=("clean100", "clean360", "other500"),
+        train_feature_mode="clean|noise|white",
+        train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
+        train_augments=(
+            ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
+            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+        ),
+        skip_precompute=True,
+    ),
+    # "1": ExperimentSpec(
+    #     name="cnn1d_emb256_m022_P8K8_other500  ++++",
+    #     run_name="cnn1d_emb256_m022_P8K8_other500  ++++",
+    #     data_mode="clean_only",
+    #     train_sets=("other500",),
+    #     train_feature_mode="clean",
+    #     emb_dim=256,
+    #     margin=0.22,
+    #     p=8,
+    #     k=8,
+    #     model_name="cnn",
+    #     skip_precompute=True,
+    #     resume_from_run="cnn1d_emb256_m022_P8K8_other500  ++++",
+    #     resume_checkpoint_type="last",
+    #     run_train=False,
+    # ),
     # "2": ExperimentSpec(
     #     name="cnn1d_emb256_m022_P12K5_other500  ++++",
     #     run_name="cnn1d_emb256_m022_P12K5_other500  ++++",
@@ -530,6 +678,10 @@ t.LEARNING_RATE = {spec.lr!r}
 t.WEIGHT_DECAY = {spec.weight_decay!r}
 
 t.COLLAPSE_PATIENCE = {spec.collapse_patience!r}
+t.LIGHTWEIGHT_VERIFY_EVERY_N_EPOCHS = {3 if spec.model_name == "conformer" else 0!r}
+t.LIGHTWEIGHT_VERIFY_SPLIT = {"dev_clean"!r}
+t.LIGHTWEIGHT_VERIFY_SAME_PAIRS = {2000!r}
+t.LIGHTWEIGHT_VERIFY_DIFF_PAIRS = {2000!r}
 resume_checkpoint_path = {str(get_resume_checkpoint_path(spec)) if get_resume_checkpoint_path(spec) is not None else None!r}
 t.RESUME_CHECKPOINT_PATH = resume_checkpoint_path
 
@@ -633,7 +785,6 @@ for checkpoint_type in checkpoint_types:
             model=model,
             split_name=split_name,
             checkpoint_type=checkpoint_type,
-            split_root=Path(split_def["wav_root"]),
             feat_root=Path(split_def["feat_root"]),
             device=device,
             output_dir=verify_dir,
