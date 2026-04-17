@@ -25,6 +25,8 @@ from src.data.dataset import (
 from src.models.model import build_embedding_model
 from src.models.triplet import BatchHardTripletLoss
 from src.models.samplers import PKSampler
+from src.metrics import compute_roc_auc_eer
+from src.pipelines import verify as verify_mod
 
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
@@ -222,6 +224,88 @@ def save_checkpoint(path, model, optimizer, epoch, best_val_loss):
     torch.save(payload, path)
 
 
+def build_lightweight_verify_loader(split_name: str) -> DataLoader:
+    eval_splits = d.get_eval_split_definitions()
+    if split_name not in eval_splits:
+        raise ValueError(f"Unknown lightweight verification split: {split_name}")
+
+    feat_root = Path(eval_splits[split_name]["feat_root"])
+    utterances = scan_split(feat_root, pattern="*.pt")
+    if not utterances:
+        raise RuntimeError(f"No utterances found in lightweight verification split: {split_name}")
+
+    dataset = verify_mod.VerificationDataset(utterances)
+    collate = partial(verify_mod.pad_trunc_collate_verify, max_frames=f.MAX_FRAMES)
+    return DataLoader(
+        dataset,
+        batch_size=t.P * t.K,
+        shuffle=False,
+        collate_fn=collate,
+        num_workers=4,
+        prefetch_factor=2,
+        persistent_workers=True,
+        pin_memory=torch.cuda.is_available(),
+    )
+
+
+def run_lightweight_verification(
+    model,
+    loader: DataLoader,
+    device: str,
+    *,
+    same_pairs: int,
+    diff_pairs: int,
+    seed: int = 37,
+) -> dict[str, float]:
+    all_embeddings: list[torch.Tensor] = []
+    all_speaker_ids: list[str] = []
+
+    model.eval()
+    try:
+        with torch.no_grad():
+            for features, speaker_ids, _paths, _lengths in loader:
+                features = features.to(device, non_blocking=True)
+                embeddings = model(features)
+                all_embeddings.append(embeddings.cpu())
+                all_speaker_ids.extend(speaker_ids)
+    finally:
+        model.train()
+
+    embeddings = torch.cat(all_embeddings, dim=0)
+    indices_by_speaker: dict[str, list[int]] = {}
+    for idx, speaker_id in enumerate(all_speaker_ids):
+        indices_by_speaker.setdefault(speaker_id, []).append(idx)
+
+    same = verify_mod.sample_pairs(
+        indices_by_speaker,
+        max_pairs=same_pairs,
+        pair_kind="same",
+        seed=seed,
+    )
+    diff = verify_mod.sample_pairs(
+        indices_by_speaker,
+        max_pairs=diff_pairs,
+        pair_kind="diff",
+        seed=seed + 1,
+    )
+    same_scores = verify_mod.cosine_scores_from_pairs(embeddings, same)
+    diff_scores = verify_mod.cosine_scores_from_pairs(embeddings, diff)
+
+    if same_scores.numel() == 0 or diff_scores.numel() == 0:
+        raise RuntimeError(
+            "Could not build enough lightweight verification pairs "
+            f"(same={same_scores.numel()}, diff={diff_scores.numel()})."
+        )
+
+    metrics = compute_roc_auc_eer(same_scores.numpy(), diff_scores.numpy())
+    return {
+        "auc": float(metrics["auc"]),
+        "eer": float(metrics["eer"]),
+        "same_mean": float(same_scores.mean().item()),
+        "diff_mean": float(diff_scores.mean().item()),
+    }
+
+
 def main():
 
     margin = t.MARGIN
@@ -246,6 +330,10 @@ def main():
     collapse_patience = getattr(t, "COLLAPSE_PATIENCE", 2)
     collapse_tolerance = 5e-4
     collapse_require_train_and_val = True
+    lightweight_verify_every = int(getattr(t, "LIGHTWEIGHT_VERIFY_EVERY_N_EPOCHS", 0))
+    lightweight_verify_split = str(getattr(t, "LIGHTWEIGHT_VERIFY_SPLIT", "dev_clean"))
+    lightweight_verify_same_pairs = int(getattr(t, "LIGHTWEIGHT_VERIFY_SAME_PAIRS", 2000))
+    lightweight_verify_diff_pairs = int(getattr(t, "LIGHTWEIGHT_VERIFY_DIFF_PAIRS", 2000))
 
     tb_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -365,6 +453,10 @@ def main():
         num_workers=6,
         prefetch_factor=2,
         persistent_workers=True)
+
+    lightweight_verify_loader = None
+    if m.MODEL_NAME.lower() == "conformer" and lightweight_verify_every > 0:
+        lightweight_verify_loader = build_lightweight_verify_loader(lightweight_verify_split)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = build_embedding_model(
@@ -506,6 +598,26 @@ def main():
                 f"val triplet loss {va_loss:.4f} | "
                 f"lr {current_lr:.6f} | "
                 f"time {elapsed:.2f}s")
+
+            if (
+                m.MODEL_NAME.lower() == "conformer"
+                and lightweight_verify_loader is not None
+                and (epoch + 1) % lightweight_verify_every == 0
+            ):
+                verify_metrics = run_lightweight_verification(
+                    model,
+                    lightweight_verify_loader,
+                    device,
+                    same_pairs=lightweight_verify_same_pairs,
+                    diff_pairs=lightweight_verify_diff_pairs,
+                )
+                print(
+                    f"epoch {epoch + 1} | "
+                    f"AUC {verify_metrics['auc']:.6f} | "
+                    f"EER {verify_metrics['eer']:.6f} | "
+                    f"same_mean {verify_metrics['same_mean']:.6f} | "
+                    f"diff_mean {verify_metrics['diff_mean']:.6f}"
+                )
 
             train_near_margin = abs(tr_loss - margin) <= collapse_tolerance
             val_near_margin = abs(va_loss - margin) <= collapse_tolerance
