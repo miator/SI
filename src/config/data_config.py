@@ -1,53 +1,73 @@
+import os
 from pathlib import Path
 from typing import Optional, Union
 
-TRAIN_CLEAN100_DATA_ROOT = Path(
-    r"C:\Users\User\Desktop\Data\LibriSpeech_standardized_chunks_3s"
+
+def _env_path(name: str, default: str) -> Path:
+    return Path(os.environ.get(name, default)).expanduser()
+
+
+_DATA_ROOT = Path(os.environ.get("SI_DATA_ROOT", "/workspace/data")).expanduser()
+PRECOMPUTED_DATA_ROOT = _env_path(
+    "SI_PRECOMPUTED_DATA_ROOT",
+    str(_DATA_ROOT / "logmel_cache"),
 )
-TRAIN_360_500_DATA_ROOT = Path(
-    r"C:\Users\User\Desktop\Data\librispeech_train_360_500_standardized_chunks_3s"
-)
-EVAL_DATA_ROOT = Path(
-    r"C:\Users\User\Desktop\Data\Librispeech_eval_standardized_chunks_3s"
+WAV_DATA_ROOT = _env_path(
+    "SI_WAV_DATA_ROOT",
+    str(_DATA_ROOT / "wav"),
 )
 
-TRAIN_CLEAN100_WAV_ROOT = TRAIN_CLEAN100_DATA_ROOT / "wav" / "train_clean100"
-TRAIN_CLEAN360_WAV_ROOT = TRAIN_360_500_DATA_ROOT / "wav" / "train-clean-360"
-TRAIN_OTHER500_WAV_ROOT = TRAIN_360_500_DATA_ROOT / "wav" / "train-other-500"
+TRAIN_CLEAN100_WAV_ROOT = _env_path(
+    "SI_TRAIN_CLEAN100_WAV_ROOT",
+    str(WAV_DATA_ROOT / "train_clean100"),
+)
+TRAIN_CLEAN360_WAV_ROOT = _env_path(
+    "SI_TRAIN_CLEAN360_WAV_ROOT",
+    str(WAV_DATA_ROOT / "train-clean-360"),
+)
+TRAIN_OTHER500_WAV_ROOT = _env_path(
+    "SI_TRAIN_OTHER500_WAV_ROOT",
+    str(WAV_DATA_ROOT / "train-other-500"),
+)
 TRAIN_WAV_ROOT = TRAIN_CLEAN100_WAV_ROOT
-EVAL_WAV_ROOT = EVAL_DATA_ROOT / "wav"
-DEV_CLEAN_WAV_ROOT = EVAL_WAV_ROOT / "dev-clean"
-DEV_OTHER_WAV_ROOT = EVAL_WAV_ROOT / "dev-other"
-TEST_CLEAN_WAV_ROOT = EVAL_WAV_ROOT / "test-clean"
-TEST_OTHER_WAV_ROOT = EVAL_WAV_ROOT / "test-other"
+EVAL_WAV_ROOT = WAV_DATA_ROOT
+DEV_CLEAN_WAV_ROOT = _env_path("SI_DEV_CLEAN_WAV_ROOT", str(WAV_DATA_ROOT / "dev-clean"))
+DEV_OTHER_WAV_ROOT = _env_path("SI_DEV_OTHER_WAV_ROOT", str(WAV_DATA_ROOT / "dev-other"))
+TEST_CLEAN_WAV_ROOT = _env_path("SI_TEST_CLEAN_WAV_ROOT", str(WAV_DATA_ROOT / "test-clean"))
+TEST_OTHER_WAV_ROOT = _env_path("SI_TEST_OTHER_WAV_ROOT", str(WAV_DATA_ROOT / "test-other"))
 
-TRAIN_CLEAN100_PRECOMPUTED_ROOT = TRAIN_CLEAN100_DATA_ROOT / "logmel_cache"
-TRAIN_360_500_PRECOMPUTED_ROOT = TRAIN_360_500_DATA_ROOT / "logmel_cache"
-TRAIN_PRECOMPUTED_ROOT = TRAIN_CLEAN100_PRECOMPUTED_ROOT
-TRAIN_CLEAN100_FEAT_ROOT = TRAIN_CLEAN100_PRECOMPUTED_ROOT / "train_clean100"
-TRAIN_CLEAN360_FEAT_ROOT = TRAIN_360_500_PRECOMPUTED_ROOT / "train-clean-360"
-TRAIN_OTHER500_FEAT_ROOT = TRAIN_360_500_PRECOMPUTED_ROOT / "train-other-500"
+TRAIN_CLEAN100_PRECOMPUTED_ROOT = PRECOMPUTED_DATA_ROOT
+TRAIN_360_500_PRECOMPUTED_ROOT = PRECOMPUTED_DATA_ROOT
+TRAIN_PRECOMPUTED_ROOT = PRECOMPUTED_DATA_ROOT
+TRAIN_CLEAN100_FEAT_ROOT = PRECOMPUTED_DATA_ROOT / "train_clean100"
+TRAIN_CLEAN360_FEAT_ROOT = PRECOMPUTED_DATA_ROOT / "train-clean-360"
+TRAIN_OTHER500_FEAT_ROOT = PRECOMPUTED_DATA_ROOT / "train-other-500"
 TRAIN_CLEAN_FEAT_ROOT = TRAIN_CLEAN100_FEAT_ROOT
 TRAIN_NOISE_FEAT_ROOTS_BY_SET = {
-    "clean100": TRAIN_CLEAN100_PRECOMPUTED_ROOT / "train_noise_snr20",
-    "clean360": TRAIN_360_500_PRECOMPUTED_ROOT / "train_noise_snr20",
-    "other500": TRAIN_360_500_PRECOMPUTED_ROOT / "train_noise_snr20",
+    "clean100": PRECOMPUTED_DATA_ROOT / "train_noise_snr20",
+    "clean360": PRECOMPUTED_DATA_ROOT / "train_noise_snr20",
+    "other500": PRECOMPUTED_DATA_ROOT / "train_noise_snr20",
 }
 TRAIN_WHITE_FEAT_ROOTS_BY_SET = {
-    "clean100": TRAIN_CLEAN100_PRECOMPUTED_ROOT / "train_white_snr25",
-    "clean360": TRAIN_360_500_PRECOMPUTED_ROOT / "train_white_snr25",
-    "other500": TRAIN_360_500_PRECOMPUTED_ROOT / "train_white_snr25",
+    "clean100": PRECOMPUTED_DATA_ROOT / "train_white_snr20-25",
+    "clean360": PRECOMPUTED_DATA_ROOT / "train_white_snr20-25",
+    "other500": PRECOMPUTED_DATA_ROOT / "train_white_snr20-25",
 }
 TRAIN_NOISE_FEAT_ROOTS = (TRAIN_NOISE_FEAT_ROOTS_BY_SET["clean100"],)
 TRAIN_WHITE_FEAT_ROOTS = (TRAIN_WHITE_FEAT_ROOTS_BY_SET["clean100"],)
 
-EVAL_PRECOMPUTED_ROOT = EVAL_DATA_ROOT / "logmel_cache"
-DEV_CLEAN_FEAT_ROOT = EVAL_PRECOMPUTED_ROOT / "dev-clean"
-DEV_OTHER_FEAT_ROOT = EVAL_PRECOMPUTED_ROOT / "dev-other"
-TEST_CLEAN_FEAT_ROOT = EVAL_PRECOMPUTED_ROOT / "test-clean"
-TEST_OTHER_FEAT_ROOT = EVAL_PRECOMPUTED_ROOT / "test-other"
+EVAL_PRECOMPUTED_ROOT = PRECOMPUTED_DATA_ROOT
+DEV_CLEAN_FEAT_ROOT = PRECOMPUTED_DATA_ROOT / "dev-clean"
+DEV_OTHER_FEAT_ROOT = PRECOMPUTED_DATA_ROOT / "dev-other"
+TEST_CLEAN_FEAT_ROOT = PRECOMPUTED_DATA_ROOT / "test-clean"
+TEST_OTHER_FEAT_ROOT = PRECOMPUTED_DATA_ROOT / "test-other"
 
-ESC50_NOISE_ROOT = Path(r"C:\Users\User\Desktop\Data\ESC-50-master-noise\audio_standardized_16k")
+ESC50_NOISE_ROOT = _env_path(
+    "SI_ESC50_NOISE_ROOT",
+    str(Path(_DATA_ROOT) / "ESC-50-master-noise" / "audio_standardized_16k")
+    if _DATA_ROOT
+    else r"C:\Users\User\Desktop\Data\ESC-50-master-noise\audio_standardized_16k",
+)
 ESC50_TRAIN_NOISE_ROOT = ESC50_NOISE_ROOT / "train-noise"
 ESC50_VAL_NOISE_ROOT = ESC50_NOISE_ROOT / "val-noise"
 ESC50_TEST_NOISE_ROOT = ESC50_NOISE_ROOT / "test-noise"
@@ -163,6 +183,27 @@ def resolve_train_feature_path_from_source_path(
     raise ValueError(
         "Source path is not under any configured train feature root "
         f"for key {source_key!r}: {source_path}"
+    )
+
+
+def resolve_train_feature_path_from_relative_path(
+    *,
+    split_root: Path,
+    relative_path: Path,
+    source_key: str,
+    target_key: str,
+) -> Path:
+    split_root = Path(split_root)
+    relative_path = Path(relative_path)
+
+    for split_def in get_train_split_definitions():
+        source_root = get_train_split_feature_root(split_def, source_key)
+        if split_root == source_root:
+            return get_train_split_feature_root(split_def, target_key) / relative_path
+
+    raise ValueError(
+        "Split root is not under any configured train feature root "
+        f"for key {source_key!r}: {split_root}"
     )
 
 

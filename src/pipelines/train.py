@@ -224,6 +224,32 @@ def save_checkpoint(path, model, optimizer, epoch, best_val_loss):
     torch.save(payload, path)
 
 
+def _build_loader_kwargs(*, num_workers: int) -> dict:
+    kwargs = {
+        "num_workers": num_workers,
+        "pin_memory": torch.cuda.is_available(),
+    }
+    if num_workers > 0:
+        kwargs["prefetch_factor"] = t.PREFETCH_FACTOR
+        kwargs["persistent_workers"] = True
+    return kwargs
+
+
+def _resolve_train_feature_path_for_utterance(utterance, source_key: str, target_key: str) -> Path:
+    if utterance.split_root is not None and utterance.relative_path is not None:
+        return d.resolve_train_feature_path_from_relative_path(
+            split_root=utterance.split_root,
+            relative_path=utterance.relative_path,
+            source_key=source_key,
+            target_key=target_key,
+        )
+    return d.resolve_train_feature_path_from_source_path(
+        utterance.path,
+        source_key,
+        target_key,
+    )
+
+
 def build_lightweight_verify_loader(split_name: str) -> DataLoader:
     eval_splits = d.get_eval_split_definitions()
     if split_name not in eval_splits:
@@ -241,10 +267,7 @@ def build_lightweight_verify_loader(split_name: str) -> DataLoader:
         batch_size=t.P * t.K,
         shuffle=False,
         collate_fn=collate,
-        num_workers=4,
-        prefetch_factor=2,
-        persistent_workers=True,
-        pin_memory=torch.cuda.is_available(),
+        **_build_loader_kwargs(num_workers=t.LIGHTWEIGHT_VERIFY_NUM_WORKERS),
     )
 
 
@@ -373,8 +396,8 @@ def main():
     if d.is_probabilistic_train_feature_mode(train_feature_mode):
         train_feature_paths_by_source = [
             {
-                key: d.resolve_train_feature_path_from_source_path(
-                    utterance.path,
+                key: _resolve_train_feature_path_for_utterance(
+                    utterance,
                     canonical_feature_key,
                     key,
                 )
@@ -402,8 +425,8 @@ def main():
         for utterance in train_utts:
             for key in train_feature_keys:
                 train_feat_paths.append(
-                    d.resolve_train_feature_path_from_source_path(
-                        utterance.path,
+                    _resolve_train_feature_path_for_utterance(
+                        utterance,
                         canonical_feature_key,
                         key,
                     )
@@ -439,9 +462,7 @@ def main():
         shuffle=False,
         # drop_last=True,
         collate_fn=collate,
-        num_workers=6,
-        prefetch_factor=2,
-        persistent_workers=True)
+        **_build_loader_kwargs(num_workers=t.TRAIN_NUM_WORKERS))
 
     val_loader = DataLoader(
         val_ds,
@@ -450,9 +471,7 @@ def main():
         shuffle=False,
         # drop_last=True,
         collate_fn=collate,
-        num_workers=6,
-        prefetch_factor=2,
-        persistent_workers=True)
+        **_build_loader_kwargs(num_workers=t.VAL_NUM_WORKERS))
 
     lightweight_verify_loader = None
     if m.MODEL_NAME.lower() == "conformer" and lightweight_verify_every > 0:

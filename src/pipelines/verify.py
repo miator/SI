@@ -40,6 +40,17 @@ SUMMARY_FIELDNAMES = [
 IGNORED_CHECKPOINT_PREFIXES = ("classifier.",)
 
 
+def _build_loader_kwargs(*, num_workers: int) -> dict:
+    kwargs = {
+        "num_workers": num_workers,
+        "pin_memory": torch.cuda.is_available(),
+    }
+    if num_workers > 0:
+        kwargs["prefetch_factor"] = t.PREFETCH_FACTOR
+        kwargs["persistent_workers"] = True
+    return kwargs
+
+
 def resolve_checkpoint_path(run_root: Path, checkpoint_type: str) -> Path:
     if checkpoint_type == "best":
         path = run_root / "checkpoints" / "best.pt"
@@ -306,10 +317,7 @@ def evaluate_split(
         batch_size=t.P * t.K,
         shuffle=False,
         collate_fn=collate,
-        num_workers=6,
-        prefetch_factor=2,
-        persistent_workers=True,
-        pin_memory=torch.cuda.is_available())
+        **_build_loader_kwargs(num_workers=t.VERIFY_NUM_WORKERS))
 
     embeddings, speaker_ids, paths = extract_embeddings(model, loader, device)
 

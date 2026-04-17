@@ -1,3 +1,4 @@
+import os
 import random
 import warnings
 from pathlib import Path
@@ -20,11 +21,17 @@ from src.data.features import LogMelExtraction
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
 TRAIN_360_500_PCM16_ROOT = Path(
-    r"C:\Users\User\Desktop\Data\librispeech_train_360_500_standardized_chunks_3s\wav"
-)
+    os.environ.get(
+        "SI_TRAIN_360_500_WAV_ROOT",
+        r"C:\Users\User\Desktop\Data\librispeech_train_360_500_standardized_chunks_3s\wav",
+    )
+).expanduser()
 TRAIN_360_500_LOGMEL_ROOT = Path(
-    r"C:\Users\User\Desktop\Data\librispeech_train_360_500_standardized_chunks_3s\logmel_cache"
-)
+    os.environ.get(
+        "SI_TRAIN_360_500_LOGMEL_ROOT",
+        r"C:\Users\User\Desktop\Data\librispeech_train_360_500_standardized_chunks_3s\logmel_cache",
+    )
+).expanduser()
 TRAIN_360_500_SPLITS = {
     "train-clean-360": {
         "wav_root": TRAIN_360_500_PCM16_ROOT / "train-clean-360",
@@ -47,8 +54,6 @@ def _precompute_split(
 ):
     utts = scan_split(wav_root)
     print(f"[{split_name}] files: {len(utts)}")
-    print("SCAN_ROOT =", wav_root)
-    print("SPEAKER_6937_EXISTS =", (Path(wav_root) / "6937").exists())
 
     for u in tqdm(utts, desc=f"precompute {split_name}"):
         out_path = wav_path_to_feature_path(u.path, wav_root, feat_root)

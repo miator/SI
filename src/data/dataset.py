@@ -18,6 +18,8 @@ class Utterance:
     path: Path
     speaker_id: str
     label: Optional[int] = None
+    split_root: Optional[Path] = None
+    relative_path: Optional[Path] = None
 
 
 def scan_split(split_root: PathLike, pattern: str = "*.wav") -> list[Utterance]:
@@ -38,7 +40,15 @@ def scan_split(split_root: PathLike, pattern: str = "*.wav") -> list[Utterance]:
         speaker_id = speaker_dir.name
         sample_paths = sorted(speaker_dir.glob(pattern))  # rglob if a speaker folder may contain nested subfolders
         for sample_path in sample_paths:
-            utterances.append(Utterance(path=sample_path, speaker_id=speaker_id, label=None))
+            utterances.append(
+                Utterance(
+                    path=sample_path,
+                    speaker_id=speaker_id,
+                    label=None,
+                    split_root=split_root,
+                    relative_path=sample_path.relative_to(split_root),
+                )
+            )
 
     return utterances
 
@@ -63,7 +73,15 @@ def attach_labels(
     for u in utterances:
         if u.speaker_id not in label_map:
             raise KeyError(f"Speaker ID {u.speaker_id} not found in label map")
-        labeled.append(Utterance(path=u.path, speaker_id=u.speaker_id, label=label_map[u.speaker_id]))
+        labeled.append(
+            Utterance(
+                path=u.path,
+                speaker_id=u.speaker_id,
+                label=label_map[u.speaker_id],
+                split_root=u.split_root,
+                relative_path=u.relative_path,
+            )
+        )
     return labeled
 
 
@@ -98,6 +116,14 @@ def load_feature_tensor(path: Path) -> torch.Tensor:
     if not isinstance(feat, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor in {path}, got {type(feat)}")
     return feat.float()
+
+
+def _should_verify_feature_files() -> bool:
+    try:
+        from src.config import train_config as t
+        return bool(getattr(t, "VERIFY_FEATURE_FILES_ON_INIT", False))
+    except Exception:
+        return False
 
 
 def _require_numeric_label(utterance: Utterance, context: str) -> int:
@@ -265,10 +291,11 @@ class PrecomputedFeatureDataset(Dataset):
             label = _require_numeric_label(utterance, "PrecomputedFeatureDataset")
             rel_feat_path = utterance.path.relative_to(self.split_root).with_suffix(".pt")
 
-            for root in self.feat_roots:
-                feat_path = root / rel_feat_path
-                if not feat_path.exists():
-                    raise FileNotFoundError(f"Missing precomputed feature file: {feat_path}")
+            if _should_verify_feature_files():
+                for root in self.feat_roots:
+                    feat_path = root / rel_feat_path
+                    if not feat_path.exists():
+                        raise FileNotFoundError(f"Missing precomputed feature file: {feat_path}")
 
             self.rel_feature_paths.append(rel_feat_path)
             self.labels.append(label)
@@ -308,9 +335,10 @@ class ResolvedPrecomputedFeatureDataset(Dataset):
         if len(self.feature_paths) != len(self.labels):
             raise ValueError("feature_paths and labels must have the same length")
 
-        for path in self.feature_paths:
-            if not path.exists():
-                raise FileNotFoundError(f"Missing precomputed feature file: {path}")
+        if _should_verify_feature_files():
+            for path in self.feature_paths:
+                if not path.exists():
+                    raise FileNotFoundError(f"Missing precomputed feature file: {path}")
 
     def __len__(self) -> int:
         return len(self.feature_paths)
@@ -365,7 +393,7 @@ class ResolvedRandomChoicePrecomputedFeatureDataset(Dataset):
                     continue
 
                 resolved_path = Path(path)
-                if not resolved_path.exists():
+                if _should_verify_feature_files() and not resolved_path.exists():
                     raise FileNotFoundError(f"Missing precomputed feature file: {resolved_path}")
 
                 enabled_paths.append(resolved_path)
@@ -441,10 +469,11 @@ class RandomChoicePrecomputedFeatureDataset(Dataset):
             self.utterance_paths.append(utterance.path)
             self.labels.append(label)
 
-            for root in self.feat_roots:
-                feat_path = wav_path_to_feature_path(utterance.path, self.split_root, root)
-                if not feat_path.exists():
-                    raise FileNotFoundError(f"Missing precomputed feature file: {feat_path}")
+            if _should_verify_feature_files():
+                for root in self.feat_roots:
+                    feat_path = wav_path_to_feature_path(utterance.path, self.split_root, root)
+                    if not feat_path.exists():
+                        raise FileNotFoundError(f"Missing precomputed feature file: {feat_path}")
 
     def __len__(self) -> int:
         return len(self.utterance_paths)

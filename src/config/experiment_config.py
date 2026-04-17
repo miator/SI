@@ -1,8 +1,11 @@
+import os
 from pathlib import Path
 from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_RUNS_DIR = PROJECT_ROOT / "runs_cnn1d"
+DEFAULT_RUNS_DIR = Path(
+    os.environ.get("SI_RUNS_DIR", str(PROJECT_ROOT / "runs_cnn1d"))
+).expanduser()
 
 EXP_NAME = ""
 RUNS_DIR = DEFAULT_RUNS_DIR
