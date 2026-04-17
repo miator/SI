@@ -45,7 +45,7 @@ class CNN1DNET(nn.Module):
 
 
 class FeedForwardModule(nn.Module):
-    def __init__(self, d_model: int, ff_mult: int = 4, dropout: float = 0.1):
+    def __init__(self, d_model: int, ff_mult: int = 4, dropout: float = 0.4):
         super().__init__()
         hidden_dim = d_model * ff_mult
         self.net = nn.Sequential(
@@ -155,12 +155,15 @@ class ConformerEmbeddingNet(nn.Module):
         num_heads: int = 4,
         ff_mult: int = 4,
         conv_kernel_size: int = 31,
-        num_blocks: int = 4,
-        dropout: float = 0.1,
+        num_blocks: int = 3,
+        dropout: float = 0.4,
+        max_len: int = 301,
     ):
         super().__init__()
         self.emb_dim = emb_dim
+        self.max_len = max_len
         self.input_proj = nn.Linear(n_feats, d_model)
+        self.pos_emb = nn.Parameter(torch.randn(1, max_len, d_model))
         self.input_dropout = nn.Dropout(dropout)
         self.blocks = nn.ModuleList(
             [
@@ -180,6 +183,11 @@ class ConformerEmbeddingNet(nn.Module):
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         x = self.input_proj(features)   # (B, T, D)
+        if x.size(1) > self.max_len:
+            raise ValueError(
+                f"Sequence length {x.size(1)} exceeds conformer max_len={self.max_len}"
+            )
+        x = x + self.pos_emb[:, :x.size(1)]
         x = self.input_dropout(x)
 
         for block in self.blocks:
