@@ -95,7 +95,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
         train_augments=(
             ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+            ("white", "train_white_snr20-25", 1.0, 25.0, 25.0),
         ),
         skip_precompute=True,
     ),
@@ -111,7 +111,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         train_feature_probabilities={"clean": 0.7, "noise": 0.3, "white": 0.0},
         train_augments=(
             ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+            ("white", "train_white_snr20-25", 1.0, 25.0, 25.0),
         ),
         skip_precompute=True,
     ),
@@ -127,7 +127,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         train_feature_probabilities={"clean": 0.8, "noise": 0.0, "white": 0.2},
         train_augments=(
             ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+            ("white", "train_white_snr20-25", 1.0, 25.0, 25.0),
         ),
         skip_precompute=True,
     ),
@@ -170,7 +170,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         train_feature_probabilities={"clean": 0.8, "noise": 0.2, "white": 0.0},
         train_augments=(
             ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+            ("white", "train_white_snr20-25", 1.0, 25.0, 25.0),
         ),
         skip_precompute=True,
     ),
@@ -187,7 +187,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         train_feature_probabilities={"clean": 0.7, "noise": 0.1, "white": 0.1},
         train_augments=(
             ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+            ("white", "train_white_snr20-25", 1.0, 25.0, 25.0),
         ),
         skip_precompute=True,
     ),
@@ -204,7 +204,7 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
         train_feature_probabilities={"clean": 0.5, "noise": 0.3, "white": 0.2},
         train_augments=(
             ("noise", "train_noise_snr20", 1.0, 20.0, 20.0),
-            ("white", "train_white_snr25", 1.0, 25.0, 25.0),
+            ("white", "train_white_snr20-25", 1.0, 25.0, 25.0),
         ),
         skip_precompute=True,
     ),

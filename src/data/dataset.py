@@ -34,11 +34,11 @@ def scan_split(split_root: PathLike, pattern: str = "*.wav") -> list[Utterance]:
     if not split_root.exists():
         raise FileNotFoundError(f"Split root does not exist: {split_root}")
 
-    speaker_dirs = sorted([p for p in split_root.iterdir() if p.is_dir()])
+    speaker_dirs = [p for p in split_root.iterdir() if p.is_dir()]
 
     for speaker_dir in speaker_dirs:
         speaker_id = speaker_dir.name
-        sample_paths = sorted(speaker_dir.glob(pattern))  # rglob if a speaker folder may contain nested subfolders
+        sample_paths = speaker_dir.glob(pattern)  # rglob if a speaker folder may contain nested subfolders
         for sample_path in sample_paths:
             utterances.append(
                 Utterance(
