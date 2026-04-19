@@ -6,6 +6,7 @@ import json
 import random
 
 import torch
+from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -186,24 +187,31 @@ def _resolve_train_feature_roots(
     return grouped_feature_roots, flat_feature_roots, None
 
 
-def run_epoch_batchhard(model, loader, criterion, optimizer, device, train: bool, desc: str):
+def run_epoch_batchhard(model, loader, criterion, optimizer, device, train: bool, desc: str, scaler=None):
     model.train() if train else model.eval()
     total_loss = 0.0
     total_batches = 0
+    use_amp = scaler is not None and torch.cuda.is_available() and str(device).startswith("cuda")
 
     ctx = torch.enable_grad() if train else torch.no_grad()
     with ctx:
         for features, labels, _lengths in tqdm(loader, desc=desc):
-            features = features.to(device)
-            labels = labels.to(device)  # .view(-1)
+            features = features.to(device, non_blocking=torch.cuda.is_available())
+            labels = labels.to(device, non_blocking=torch.cuda.is_available())  # .view(-1)
 
-            emb = model(features)
-            loss = criterion(emb, labels)
+            with autocast("cuda", enabled=use_amp):
+                emb = model(features)
+                loss = criterion(emb, labels)
 
             if train:
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
+                if use_amp:
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
 
             total_loss += float(loss.item())
             total_batches += 1
@@ -497,6 +505,8 @@ def main():
         model.parameters(),
         lr=lr,
         weight_decay=weight_decay)
+    use_amp = torch.cuda.is_available()
+    scaler = GradScaler("cuda", enabled=use_amp)
 
     resume_checkpoint_path = getattr(t, "RESUME_CHECKPOINT_PATH", None)
     start_epoch = 0
@@ -573,7 +583,8 @@ def main():
                 optimizer,
                 device,
                 train=True,
-                desc=f"train {epoch + 1}/{epochs}")
+                desc=f"train {epoch + 1}/{epochs}",
+                scaler=scaler)
             va_loss = run_epoch_batchhard(
                 model,
                 val_loader,
@@ -581,7 +592,8 @@ def main():
                 optimizer,
                 device,
                 train=False,
-                desc=f"val {epoch + 1}/{epochs}")
+                desc=f"val {epoch + 1}/{epochs}",
+                scaler=None)
 
             elapsed = time.perf_counter() - start
             current_lr = optimizer.param_groups[0]["lr"]

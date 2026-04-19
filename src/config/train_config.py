@@ -25,9 +25,9 @@ def _env_int(name: str, default: int) -> int:
     return int(value) if value is not None else default
 
 
-TRAIN_NUM_WORKERS = _env_int("SI_TRAIN_NUM_WORKERS", min(8, max(1, (os.cpu_count() or 8) // 2)))
-VAL_NUM_WORKERS = _env_int("SI_VAL_NUM_WORKERS", min(4, max(1, (os.cpu_count() or 8) // 4)))
-VERIFY_NUM_WORKERS = _env_int("SI_VERIFY_NUM_WORKERS", min(4, max(1, (os.cpu_count() or 8) // 4)))
+TRAIN_NUM_WORKERS = _env_int("SI_TRAIN_NUM_WORKERS", 48)
+VAL_NUM_WORKERS = _env_int("SI_VAL_NUM_WORKERS", 1)
+VERIFY_NUM_WORKERS = _env_int("SI_VERIFY_NUM_WORKERS", 1)
 LIGHTWEIGHT_VERIFY_NUM_WORKERS = _env_int("SI_LIGHTWEIGHT_VERIFY_NUM_WORKERS", VERIFY_NUM_WORKERS)
-PREFETCH_FACTOR = _env_int("SI_PREFETCH_FACTOR", 4)
+PREFETCH_FACTOR = _env_int("SI_PREFETCH_FACTOR", 2)
 VERIFY_FEATURE_FILES_ON_INIT = os.environ.get("SI_VERIFY_FEATURE_FILES_ON_INIT", "0") == "1"
