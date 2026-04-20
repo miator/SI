@@ -410,6 +410,12 @@ def main():
         conformer_ff_mult=m.CONFORMER_FF_MULT,
         conformer_conv_kernel_size=m.CONFORMER_CONV_KERNEL_SIZE,
         conformer_num_blocks=m.CONFORMER_NUM_BLOCKS,
+        ecapa_channels=m.ECAPA_CHANNELS,
+        ecapa_mfa_channels=m.ECAPA_MFA_CHANNELS,
+        ecapa_attention_channels=m.ECAPA_ATTENTION_CHANNELS,
+        ecapa_scale=m.ECAPA_SCALE,
+        ecapa_se_bottleneck=m.ECAPA_SE_BOTTLENECK,
+        ecapa_dropout=m.ECAPA_DROPOUT,
     ).to(device)
 
     load_checkpoint_into_model(model, ckpt["model_state_dict"])
