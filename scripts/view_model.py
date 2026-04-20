@@ -5,10 +5,10 @@ from torchinfo import summary
 from src.config import feature_config as f
 from src.config import model_config as m
 from src.config import experiment_config as e
-from src.models.model import CNN1DNET
+from src.models.model import build_embedding_model
 
 
-def count_params(model: CNN1DNET) -> tuple[int, int, int]:
+def count_params(model) -> tuple[int, int, int]:
     total = sum(param.numel() for param in model.parameters())
     trainable = sum(param.numel() for param in model.parameters() if param.requires_grad)
     non_trainable = total - trainable
@@ -16,11 +16,25 @@ def count_params(model: CNN1DNET) -> tuple[int, int, int]:
 
 
 def main() -> None:
-    model = CNN1DNET(
+    model = build_embedding_model(
+        m.MODEL_NAME,
         n_feats=f.N_MELS,
         emb_dim=m.EMB_DIM,
         dropout=m.DROPOUT,
+        conformer_d_model=m.CONFORMER_D_MODEL,
+        conformer_dropout=m.CONFORMER_DROPOUT,
+        conformer_num_heads=m.CONFORMER_NUM_HEADS,
+        conformer_ff_mult=m.CONFORMER_FF_MULT,
+        conformer_conv_kernel_size=m.CONFORMER_CONV_KERNEL_SIZE,
+        conformer_num_blocks=m.CONFORMER_NUM_BLOCKS,
+        ecapa_channels=m.ECAPA_CHANNELS,
+        ecapa_mfa_channels=m.ECAPA_MFA_CHANNELS,
+        ecapa_attention_channels=m.ECAPA_ATTENTION_CHANNELS,
+        ecapa_scale=m.ECAPA_SCALE,
+        ecapa_se_bottleneck=m.ECAPA_SE_BOTTLENECK,
+        ecapa_dropout=m.ECAPA_DROPOUT,
     )
+    model.eval()
 
     total, trainable, non_trainable = count_params(model)
 
