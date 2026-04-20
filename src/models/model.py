@@ -1,4 +1,5 @@
 from typing import Optional
+import math
 
 import torch
 from torch import nn
@@ -70,6 +71,193 @@ class StatisticsPooling(nn.Module):
         mean = x.mean(dim=1)
         std = torch.sqrt(x.var(dim=1, unbiased=False).clamp_min(self.eps))
         return torch.cat([mean, std], dim=1)
+
+
+class SEModule(nn.Module):
+    def __init__(self, channels: int, bottleneck: int = 128):
+        super().__init__()
+        self.se = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            nn.Conv1d(channels, bottleneck, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv1d(bottleneck, channels, kernel_size=1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.se(x)
+
+
+class ECAPARes2Block(nn.Module):
+    """Res2Net TDNN block with squeeze-excitation, adapted for cached log-mels."""
+
+    def __init__(
+        self,
+        channels: int,
+        *,
+        kernel_size: int,
+        dilation: int,
+        scale: int = 8,
+        se_bottleneck: int = 128,
+    ):
+        super().__init__()
+        if channels % scale != 0:
+            raise ValueError("ecapa_channels must be divisible by ecapa_scale.")
+
+        width = channels // scale
+        padding = math.floor(kernel_size / 2) * dilation
+        self.width = width
+        self.num_branches = scale - 1
+
+        self.conv1 = nn.Conv1d(channels, width * scale, kernel_size=1)
+        self.bn1 = nn.BatchNorm1d(width * scale)
+        self.convs = nn.ModuleList(
+            [
+                nn.Conv1d(
+                    width,
+                    width,
+                    kernel_size=kernel_size,
+                    dilation=dilation,
+                    padding=padding,
+                )
+                for _ in range(self.num_branches)
+            ]
+        )
+        self.bns = nn.ModuleList([nn.BatchNorm1d(width) for _ in range(self.num_branches)])
+        self.conv3 = nn.Conv1d(width * scale, channels, kernel_size=1)
+        self.bn3 = nn.BatchNorm1d(channels)
+        self.relu = nn.ReLU()
+        self.se = SEModule(channels, bottleneck=se_bottleneck)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+
+        out = self.conv1(x)
+        out = self.relu(out)
+        out = self.bn1(out)
+
+        splits = torch.split(out, self.width, dim=1)
+        branch_outputs = []
+        running = None
+        for idx in range(self.num_branches):
+            running = splits[idx] if running is None else running + splits[idx]
+            running = self.convs[idx](running)
+            running = self.relu(running)
+            running = self.bns[idx](running)
+            branch_outputs.append(running)
+
+        out = torch.cat([*branch_outputs, splits[self.num_branches]], dim=1)
+        out = self.conv3(out)
+        out = self.relu(out)
+        out = self.bn3(out)
+        out = self.se(out)
+        return out + residual
+
+
+class AttentiveStatisticsPooling(nn.Module):
+    def __init__(
+        self,
+        channels: int,
+        *,
+        attention_channels: int = 256,
+        eps: float = 1e-4,
+    ):
+        super().__init__()
+        self.eps = eps
+        self.attention = nn.Sequential(
+            nn.Conv1d(3 * channels, attention_channels, kernel_size=1),
+            nn.ReLU(),
+            nn.BatchNorm1d(attention_channels),
+            nn.Tanh(),
+            nn.Conv1d(attention_channels, channels, kernel_size=1),
+            nn.Softmax(dim=2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        time_steps = x.size(2)
+        mean = x.mean(dim=2, keepdim=True).repeat(1, 1, time_steps)
+        std = torch.sqrt(x.var(dim=2, keepdim=True, unbiased=False).clamp_min(self.eps))
+        std = std.repeat(1, 1, time_steps)
+
+        weights = self.attention(torch.cat([x, mean, std], dim=1))
+        pooled_mean = torch.sum(x * weights, dim=2)
+        pooled_std = torch.sqrt(
+            (torch.sum((x ** 2) * weights, dim=2) - pooled_mean ** 2).clamp_min(self.eps)
+        )
+        return torch.cat([pooled_mean, pooled_std], dim=1)
+
+
+class ECAPATDNNEmbeddingNet(nn.Module):
+    """ECAPA-TDNN encoder for precomputed log-mel features shaped (B, T, F)."""
+
+    def __init__(
+        self,
+        n_feats: int,
+        emb_dim: int = 192,
+        channels: int = 512,
+        mfa_channels: int = 1536,
+        attention_channels: int = 256,
+        scale: int = 8,
+        se_bottleneck: int = 128,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.emb_dim = emb_dim
+        self.conv1 = nn.Conv1d(n_feats, channels, kernel_size=5, stride=1, padding=2)
+        self.relu = nn.ReLU()
+        self.bn1 = nn.BatchNorm1d(channels)
+
+        self.layer1 = ECAPARes2Block(
+            channels,
+            kernel_size=3,
+            dilation=2,
+            scale=scale,
+            se_bottleneck=se_bottleneck,
+        )
+        self.layer2 = ECAPARes2Block(
+            channels,
+            kernel_size=3,
+            dilation=3,
+            scale=scale,
+            se_bottleneck=se_bottleneck,
+        )
+        self.layer3 = ECAPARes2Block(
+            channels,
+            kernel_size=3,
+            dilation=4,
+            scale=scale,
+            se_bottleneck=se_bottleneck,
+        )
+        self.mfa = nn.Conv1d(3 * channels, mfa_channels, kernel_size=1)
+        self.pool = AttentiveStatisticsPooling(
+            mfa_channels,
+            attention_channels=attention_channels,
+        )
+        self.bn_pool = nn.BatchNorm1d(2 * mfa_channels)
+        self.dropout = nn.Dropout(dropout)
+        self.emb = nn.Linear(2 * mfa_channels, emb_dim)
+        self.bn_emb = nn.BatchNorm1d(emb_dim)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        x = features.transpose(1, 2)    # (B, F, T)
+        x = self.conv1(x)
+        x = self.relu(x)
+        x = self.bn1(x)
+
+        x1 = self.layer1(x)
+        x2 = self.layer2(x + x1)
+        x3 = self.layer3(x + x1 + x2)
+
+        x = self.mfa(torch.cat([x1, x2, x3], dim=1))
+        x = self.relu(x)
+        x = self.pool(x)
+        x = self.bn_pool(x)
+        x = self.dropout(x)
+
+        e = self.emb(x)
+        e = self.bn_emb(e)
+        e = F.normalize(e, p=2, dim=1)
+        return e
 
 
 class ConformerConvModule(nn.Module):
@@ -213,8 +401,14 @@ def build_embedding_model(
     conformer_conv_kernel_size: int = 31,
     conformer_num_blocks: int = 4,
     conformer_dropout: Optional[float] = None,
+    ecapa_channels: int = 512,
+    ecapa_mfa_channels: int = 1536,
+    ecapa_attention_channels: int = 256,
+    ecapa_scale: int = 8,
+    ecapa_se_bottleneck: int = 128,
+    ecapa_dropout: Optional[float] = None,
 ) -> nn.Module:
-    model_name = model_name.lower()
+    model_name = model_name.lower().replace("-", "_")
 
     if model_name == "cnn":
         return CNN1DNET(
@@ -234,6 +428,19 @@ def build_embedding_model(
             conv_kernel_size=conformer_conv_kernel_size,
             num_blocks=conformer_num_blocks,
             dropout=effective_conformer_dropout,
+        )
+
+    if model_name in {"ecapa", "ecapa_tdnn"}:
+        effective_ecapa_dropout = dropout if ecapa_dropout is None else ecapa_dropout
+        return ECAPATDNNEmbeddingNet(
+            n_feats=n_feats,
+            emb_dim=emb_dim,
+            channels=ecapa_channels,
+            mfa_channels=ecapa_mfa_channels,
+            attention_channels=ecapa_attention_channels,
+            scale=ecapa_scale,
+            se_bottleneck=ecapa_se_bottleneck,
+            dropout=effective_ecapa_dropout,
         )
 
     raise ValueError(f"Unsupported MODEL_NAME: {model_name}")
