@@ -350,7 +350,13 @@ def main():
     train_data_mode = getattr(d, "TRAIN_DATA_MODE", "clean_only")
     train_set_names = getattr(d, "TRAIN_SET_NAMES", ("clean100",))
     train_data_probabilities = getattr(d, "TRAIN_DATA_PROBABILITIES", None)
-    model_dropout = m.CONFORMER_DROPOUT if m.MODEL_NAME.lower() == "conformer" else m.DROPOUT
+    normalized_model_name = m.MODEL_NAME.lower().replace("-", "_")
+    if normalized_model_name == "conformer":
+        model_dropout = m.CONFORMER_DROPOUT
+    elif normalized_model_name in {"ecapa", "ecapa_tdnn"}:
+        model_dropout = m.ECAPA_DROPOUT
+    else:
+        model_dropout = m.DROPOUT
 
     run_name = e.EXP_NAME
     run_root = Path(e.RUNS_DIR) / run_name
@@ -482,7 +488,7 @@ def main():
         **_build_loader_kwargs(num_workers=t.VAL_NUM_WORKERS))
 
     lightweight_verify_loader = None
-    if m.MODEL_NAME.lower() == "conformer" and lightweight_verify_every > 0:
+    if normalized_model_name in {"conformer", "ecapa", "ecapa_tdnn"} and lightweight_verify_every > 0:
         lightweight_verify_loader = build_lightweight_verify_loader(lightweight_verify_split)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -497,6 +503,12 @@ def main():
         conformer_ff_mult=m.CONFORMER_FF_MULT,
         conformer_conv_kernel_size=m.CONFORMER_CONV_KERNEL_SIZE,
         conformer_num_blocks=m.CONFORMER_NUM_BLOCKS,
+        ecapa_channels=m.ECAPA_CHANNELS,
+        ecapa_mfa_channels=m.ECAPA_MFA_CHANNELS,
+        ecapa_attention_channels=m.ECAPA_ATTENTION_CHANNELS,
+        ecapa_scale=m.ECAPA_SCALE,
+        ecapa_se_bottleneck=m.ECAPA_SE_BOTTLENECK,
+        ecapa_dropout=m.ECAPA_DROPOUT,
     ).to(device)
 
     triplet_loss = BatchHardTripletLoss(margin=margin, normalize=False)  # model return normalized embeddings
@@ -549,6 +561,12 @@ def main():
                 f"conformer_ff_mult={m.CONFORMER_FF_MULT}",
                 f"conformer_conv_kernel_size={m.CONFORMER_CONV_KERNEL_SIZE}",
                 f"conformer_num_blocks={m.CONFORMER_NUM_BLOCKS}",
+                f"ecapa_channels={m.ECAPA_CHANNELS}",
+                f"ecapa_mfa_channels={m.ECAPA_MFA_CHANNELS}",
+                f"ecapa_attention_channels={m.ECAPA_ATTENTION_CHANNELS}",
+                f"ecapa_scale={m.ECAPA_SCALE}",
+                f"ecapa_se_bottleneck={m.ECAPA_SE_BOTTLENECK}",
+                f"ecapa_dropout={m.ECAPA_DROPOUT}",
                 f"train_feature_mode={train_feature_mode}",
                 f"train_data_mode={train_data_mode}",
                 f"train_set_names={train_set_names}",
@@ -631,7 +649,7 @@ def main():
                 f"time {elapsed:.2f}s")
 
             if (
-                m.MODEL_NAME.lower() == "conformer"
+                normalized_model_name in {"conformer", "ecapa", "ecapa_tdnn"}
                 and lightweight_verify_loader is not None
                 and (epoch + 1) % lightweight_verify_every == 0
             ):
