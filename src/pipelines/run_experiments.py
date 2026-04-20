@@ -13,6 +13,10 @@ from src.config import experiment_config as e
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
 COOLDOWN_SECONDS = 20
 COLLAPSED_TRAINING_EXIT_CODE = 42
 DEFAULT_VERIFY_SPLITS = ("dev_clean", "dev_other", "test_clean", "test_other")
@@ -35,7 +39,7 @@ class ExperimentSpec:
     snr_max: Optional[float] = None
     train_feature_subdir: Optional[str] = None
     emb_dim: int = 256
-    model_name: str = "cnn"  # conformer, cnn
+    model_name: str = "cnn"  # cnn, conformer, ecapa
     margin: float = 0.22
     p: int = 12
     k: int = 5
@@ -49,6 +53,12 @@ class ExperimentSpec:
     conformer_ff_mult: int = 4
     conformer_conv_kernel_size: int = 31
     conformer_num_blocks: int = 3
+    ecapa_channels: int = 512
+    ecapa_mfa_channels: int = 1536
+    ecapa_attention_channels: int = 256
+    ecapa_scale: int = 8
+    ecapa_se_bottleneck: int = 128
+    ecapa_dropout: float = 0.0
     collapse_patience: int = 3
     resume_from_run: Optional[str] = None
     resume_checkpoint_type: str = "best"
@@ -61,102 +71,12 @@ class ExperimentSpec:
 
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
-    # "1": ExperimentSpec(
-    #     name="cnn1d_emb256_m022_P16K5_clean360",
-    #     run_name="cnn1d_emb256_m022_P16K5_clean360",
-    #     model_name="cnn",
-    #     p=16,
-    #     k=5,
-    #     data_mode="clean_only",
-    #     train_sets=("clean360",),
-    #     train_feature_mode="clean",
-    #     skip_precompute=True,
-    # ),
-    # "2": ExperimentSpec(
-    #     name="cnn1d_emb256_m022_P16K8_clean360",
-    #     run_name="cnn1d_emb256_m022_P16K8_clean360",
-    #     model_name="cnn",
-    #     p=16,
-    #     k=8,
-    #     data_mode="clean_only",
-    #     train_sets=("clean360",),
-    #     train_feature_mode="clean",
-    #     skip_precompute=True,
-    # ),
-    # "3": ExperimentSpec(
-    #     name="cnn1d_emb256_m022_P12K8_clean360",
-    #     run_name="cnn1d_emb256_m022_P12K8_clean360",
-    #     model_name="cnn",
-    #     p=12,
-    #     k=8,
-    #     data_mode="clean_only",
-    #     train_sets=("clean360",),
-    #     train_feature_mode="clean",
-    #     skip_precompute=True,
-    # ),
-    # "4": ExperimentSpec(
-    #     name="cnn1d_emb256_m022_P20K6_clean360",
-    #     run_name="cnn1d_emb256_m022_P20K6_clean360",
-    #     model_name="cnn",
-    #     p=20,
-    #     k=6,
-    #     data_mode="clean_only",
-    #     train_sets=("clean360",),
-    #     train_feature_mode="clean",
-    #     skip_precompute=True,
-    # ),
-    "cnn_1": ExperimentSpec(
-        name="cnn1d_emb256_m022_P16K8_full960",
-        run_name="cnn1d_emb256_m022_P16K8_full960",
-        model_name="cnn",
+    "1": ExperimentSpec(
+        name="ecapa_emb256_m022_P16K8_full960",
+        run_name="ecapa_emb256_m022_P16K8_full960",
+        model_name="ecapa",
         p=16,
         k=8,
-        data_mode="clean_only",
-        train_sets=("clean100", "clean360", "other500"),
-        train_feature_mode="clean",
-        skip_precompute=True,
-    ),
-    "cnn_2": ExperimentSpec(
-        name="cnn1d_emb256_m022_P16K6_full960",
-        run_name="cnn1d_emb256_m022_P16K6_full960",
-        model_name="cnn",
-        p=16,
-        k=6,
-        data_mode="clean_only",
-        train_sets=("clean100", "clean360", "other500"),
-        train_feature_mode="clean",
-        skip_precompute=True,
-    ),
-    "conf_1": ExperimentSpec(
-        name="conf_emb256_m022_P12K5_full960",
-        run_name="conf_emb256_m022_P12K5_full960",
-        model_name="conformer",
-        p=12,
-        k=5,
-        lr=5e-5,
-        data_mode="clean_only",
-        train_sets=("clean100", "clean360", "other500"),
-        train_feature_mode="clean",
-        skip_precompute=True,
-    ),
-    "conf_2": ExperimentSpec(
-        name="conf_emb256_m022_P16K5_full960",
-        run_name="conf_emb256_m022_P16K5_full960",
-        model_name="conformer",
-        p=16,
-        k=5,
-        lr=5e-5,
-        data_mode="clean_only",
-        train_sets=("clean100", "clean360", "other500"),
-        train_feature_mode="clean",
-        skip_precompute=True,
-    ),
-    "conf_3": ExperimentSpec(
-        name="conf_emb256_m022_P16K6_full960",
-        run_name="conf_emb256_m022_P16K6_full960",
-        model_name="conformer",
-        p=16,
-        k=6,
         lr=5e-5,
         data_mode="clean_only",
         train_sets=("clean100", "clean360", "other500"),
@@ -459,7 +379,7 @@ t.LEARNING_RATE = {spec.lr!r}
 t.WEIGHT_DECAY = {spec.weight_decay!r}
 
 t.COLLAPSE_PATIENCE = {spec.collapse_patience!r}
-t.LIGHTWEIGHT_VERIFY_EVERY_N_EPOCHS = {3 if spec.model_name == "conformer" else 0!r}
+t.LIGHTWEIGHT_VERIFY_EVERY_N_EPOCHS = {3 if spec.model_name.lower().replace("-", "_") in {"conformer", "ecapa", "ecapa_tdnn"} else 0!r}
 t.LIGHTWEIGHT_VERIFY_SPLIT = {"dev_clean"!r}
 t.LIGHTWEIGHT_VERIFY_SAME_PAIRS = {2000!r}
 t.LIGHTWEIGHT_VERIFY_DIFF_PAIRS = {2000!r}
@@ -475,6 +395,12 @@ m.CONFORMER_NUM_HEADS = {spec.conformer_num_heads!r}
 m.CONFORMER_FF_MULT = {spec.conformer_ff_mult!r}
 m.CONFORMER_CONV_KERNEL_SIZE = {spec.conformer_conv_kernel_size!r}
 m.CONFORMER_NUM_BLOCKS = {spec.conformer_num_blocks!r}
+m.ECAPA_CHANNELS = {spec.ecapa_channels!r}
+m.ECAPA_MFA_CHANNELS = {spec.ecapa_mfa_channels!r}
+m.ECAPA_ATTENTION_CHANNELS = {spec.ecapa_attention_channels!r}
+m.ECAPA_SCALE = {spec.ecapa_scale!r}
+m.ECAPA_SE_BOTTLENECK = {spec.ecapa_se_bottleneck!r}
+m.ECAPA_DROPOUT = {spec.ecapa_dropout!r}
 
 import src.pipelines.train as train_mod
 try:
@@ -496,6 +422,7 @@ from src.config import data_config as d
 from src.config import experiment_config as e
 from src.config import feature_config as f
 from src.config import model_config as m
+from src.config import train_config as t
 from src.models.model import build_embedding_model
 from src.pipelines import verify as verify_mod
 
@@ -518,6 +445,14 @@ m.CONFORMER_NUM_HEADS = {spec.conformer_num_heads!r}
 m.CONFORMER_FF_MULT = {spec.conformer_ff_mult!r}
 m.CONFORMER_CONV_KERNEL_SIZE = {spec.conformer_conv_kernel_size!r}
 m.CONFORMER_NUM_BLOCKS = {spec.conformer_num_blocks!r}
+m.ECAPA_CHANNELS = {spec.ecapa_channels!r}
+m.ECAPA_MFA_CHANNELS = {spec.ecapa_mfa_channels!r}
+m.ECAPA_ATTENTION_CHANNELS = {spec.ecapa_attention_channels!r}
+m.ECAPA_SCALE = {spec.ecapa_scale!r}
+m.ECAPA_SE_BOTTLENECK = {spec.ecapa_se_bottleneck!r}
+m.ECAPA_DROPOUT = {spec.ecapa_dropout!r}
+t.P = {spec.p!r}
+t.K = {spec.k!r}
 train_feature_overrides = {get_train_feature_overrides(spec)!r}
 for split_def in d.get_train_split_definitions():
     set_name = str(split_def["set_name"])
@@ -555,6 +490,12 @@ for checkpoint_type in checkpoint_types:
         conformer_ff_mult=m.CONFORMER_FF_MULT,
         conformer_conv_kernel_size=m.CONFORMER_CONV_KERNEL_SIZE,
         conformer_num_blocks=m.CONFORMER_NUM_BLOCKS,
+        ecapa_channels=m.ECAPA_CHANNELS,
+        ecapa_mfa_channels=m.ECAPA_MFA_CHANNELS,
+        ecapa_attention_channels=m.ECAPA_ATTENTION_CHANNELS,
+        ecapa_scale=m.ECAPA_SCALE,
+        ecapa_se_bottleneck=m.ECAPA_SE_BOTTLENECK,
+        ecapa_dropout=m.ECAPA_DROPOUT,
     ).to(device)
     verify_mod.load_checkpoint_into_model(model, ckpt["model_state_dict"])
 
