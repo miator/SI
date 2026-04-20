@@ -7,54 +7,113 @@ def _env_path(name: str, default: str) -> Path:
     return Path(os.environ.get(name, default)).expanduser()
 
 
-_DATA_ROOT = Path(os.environ.get("SI_DATA_ROOT", "/workspace/data")).expanduser()
+_RUNPOD_DATA_ROOT = Path("/workspace/data")
+_LOCAL_DATA_ROOT = Path(r"C:\Users\User\Desktop\Data")
+_IS_WINDOWS = os.name == "nt"
+_DEFAULT_DATA_ROOT = (
+    _RUNPOD_DATA_ROOT
+    if not _IS_WINDOWS and _RUNPOD_DATA_ROOT.exists()
+    else _LOCAL_DATA_ROOT
+)
+_DATA_ROOT = Path(os.environ.get("SI_DATA_ROOT", str(_DEFAULT_DATA_ROOT))).expanduser()
+_USE_RUNPOD_LAYOUT = not _IS_WINDOWS and _DATA_ROOT.as_posix().startswith("/workspace/")
+
+
+def _default_train_clean100_logmel_root() -> Path:
+    if _USE_RUNPOD_LAYOUT:
+        return _DATA_ROOT / "logmel_cache"
+    return _DATA_ROOT / "LibriSpeech_standardized_chunks_3s" / "logmel_cache"
+
+
+def _default_train_360_500_logmel_root() -> Path:
+    if _USE_RUNPOD_LAYOUT:
+        return _DATA_ROOT / "logmel_cache"
+    return _DATA_ROOT / "librispeech_train_360_500_standardized_chunks_3s" / "logmel_cache"
+
+
+def _default_eval_logmel_root() -> Path:
+    if _USE_RUNPOD_LAYOUT:
+        return _DATA_ROOT / "logmel_cache"
+    return _DATA_ROOT / "Librispeech_eval_standardized_chunks_3s" / "logmel_cache"
+
+
+def _default_wav_root() -> Path:
+    if _USE_RUNPOD_LAYOUT:
+        return _DATA_ROOT / "wav"
+    return _DATA_ROOT
+
+
+def _default_train_clean100_wav_root() -> Path:
+    if _USE_RUNPOD_LAYOUT:
+        return WAV_DATA_ROOT / "train_clean100"
+    return _DATA_ROOT / "LibriSpeech_standardized_chunks_3s" / "wav" / "train_clean100"
+
+
+def _default_train_clean360_wav_root() -> Path:
+    if _USE_RUNPOD_LAYOUT:
+        return WAV_DATA_ROOT / "train-clean-360"
+    return _DATA_ROOT / "librispeech_train_360_500_standardized_chunks_3s" / "wav" / "train-clean-360"
+
+
+def _default_train_other500_wav_root() -> Path:
+    if _USE_RUNPOD_LAYOUT:
+        return WAV_DATA_ROOT / "train-other-500"
+    return _DATA_ROOT / "librispeech_train_360_500_standardized_chunks_3s" / "wav" / "train-other-500"
+
+
+def _default_eval_wav_root(split_name: str) -> Path:
+    if _USE_RUNPOD_LAYOUT:
+        return WAV_DATA_ROOT / split_name
+    return _DATA_ROOT / "Librispeech_eval_standardized_chunks_3s" / "wav" / split_name
+
+
 PRECOMPUTED_DATA_ROOT = _env_path(
     "SI_PRECOMPUTED_DATA_ROOT",
     str(_DATA_ROOT / "logmel_cache"),
 )
 WAV_DATA_ROOT = _env_path(
     "SI_WAV_DATA_ROOT",
-    str(_DATA_ROOT / "wav"),
+    str(_default_wav_root()),
 )
 
 TRAIN_CLEAN100_WAV_ROOT = _env_path(
     "SI_TRAIN_CLEAN100_WAV_ROOT",
-    str(WAV_DATA_ROOT / "train_clean100"),
+    str(_default_train_clean100_wav_root()),
 )
 TRAIN_CLEAN360_WAV_ROOT = _env_path(
     "SI_TRAIN_CLEAN360_WAV_ROOT",
-    str(WAV_DATA_ROOT / "train-clean-360"),
+    str(_default_train_clean360_wav_root()),
 )
 TRAIN_OTHER500_WAV_ROOT = _env_path(
     "SI_TRAIN_OTHER500_WAV_ROOT",
-    str(WAV_DATA_ROOT / "train-other-500"),
+    str(_default_train_other500_wav_root()),
 )
 TRAIN_WAV_ROOT = TRAIN_CLEAN100_WAV_ROOT
 EVAL_WAV_ROOT = WAV_DATA_ROOT
 DEV_CLEAN_WAV_ROOT = _env_path(
     "SI_DEV_CLEAN_WAV_ROOT",
-    str(WAV_DATA_ROOT / "dev-clean"),
+    str(_default_eval_wav_root("dev-clean")),
 )
 DEV_OTHER_WAV_ROOT = _env_path(
     "SI_DEV_OTHER_WAV_ROOT",
-    str(WAV_DATA_ROOT / "dev-other"),
+    str(_default_eval_wav_root("dev-other")),
 )
 TEST_CLEAN_WAV_ROOT = _env_path(
     "SI_TEST_CLEAN_WAV_ROOT",
-    str(WAV_DATA_ROOT / "test-clean"),
+    str(_default_eval_wav_root("test-clean")),
 )
 TEST_OTHER_WAV_ROOT = _env_path(
     "SI_TEST_OTHER_WAV_ROOT",
-    str(WAV_DATA_ROOT / "test-other"),
+    str(_default_eval_wav_root("test-other")),
 )
 
 TRAIN_CLEAN100_PRECOMPUTED_ROOT = _env_path(
     "SI_TRAIN_CLEAN100_PRECOMPUTED_ROOT",
-    str(PRECOMPUTED_DATA_ROOT),
+    str(_default_train_clean100_logmel_root()),
 )
 TRAIN_360_500_PRECOMPUTED_ROOT = _env_path(
     "SI_TRAIN_360_500_PRECOMPUTED_ROOT",
-    str(PRECOMPUTED_DATA_ROOT),
+    str(_default_train_360_500_logmel_root()),
 )
 TRAIN_PRECOMPUTED_ROOT = TRAIN_CLEAN100_PRECOMPUTED_ROOT
 TRAIN_CLEAN100_FEAT_ROOT = _env_path(
@@ -85,7 +144,7 @@ TRAIN_WHITE_FEAT_ROOTS = (TRAIN_WHITE_FEAT_ROOTS_BY_SET["clean100"],)
 
 EVAL_PRECOMPUTED_ROOT = _env_path(
     "SI_EVAL_PRECOMPUTED_ROOT",
-    str(PRECOMPUTED_DATA_ROOT),
+    str(_default_eval_logmel_root()),
 )
 DEV_CLEAN_FEAT_ROOT = _env_path("SI_DEV_CLEAN_FEAT_ROOT", str(EVAL_PRECOMPUTED_ROOT / "dev-clean"))
 DEV_OTHER_FEAT_ROOT = _env_path("SI_DEV_OTHER_FEAT_ROOT", str(EVAL_PRECOMPUTED_ROOT / "dev-other"))
