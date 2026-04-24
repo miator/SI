@@ -4,6 +4,7 @@ from functools import partial
 import warnings
 import json
 import random
+from collections import Counter
 
 import torch
 from torch.amp import autocast, GradScaler
@@ -31,7 +32,7 @@ from src.pipelines import verify as verify_mod
 
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 
-torch.set_num_threads(4)
+# torch.set_num_threads(4)
 # torch.set_num_interop_threads(1)
 
 
@@ -378,6 +379,8 @@ def main():
     train_utts = _load_train_utterances(train_feature_mode)
     train_label_map = build_label_map(train_utts)
     train_utts = attach_labels(train_utts, train_label_map)
+    label_counts = Counter(u.label for u in train_utts)
+    train_utts = [u for u in train_utts if label_counts[u.label] >= 8]
 
     val_utts = scan_split(d.VAL_FEAT_ROOT, pattern="*.pt")
     val_label_map = build_label_map(val_utts)

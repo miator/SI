@@ -46,11 +46,11 @@ class CNN1DNET(nn.Module):
 
 
 class ResidualBlock1D(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int):
+    def __init__(self, in_ch: int, out_ch: int, residual_scale: float = 0.5):
         super().__init__()
+        self.residual_scale = residual_scale
         self.conv1 = nn.Conv1d(in_ch, out_ch, kernel_size=3, padding=1, bias=False)
         self.bn1 = nn.BatchNorm1d(out_ch)
-        self.relu = nn.ReLU()
         self.conv2 = nn.Conv1d(out_ch, out_ch, kernel_size=3, padding=1, bias=False)
         self.bn2 = nn.BatchNorm1d(out_ch)
 
@@ -67,11 +67,12 @@ class ResidualBlock1D(nn.Module):
 
         out = self.conv1(x)
         out = self.bn1(out)
-        out = self.relu(out)
+        out = F.relu(out)
         out = self.conv2(out)
         out = self.bn2(out)
-
-        return self.relu(out + residual)
+        out = residual + self.residual_scale * out
+        out = F.relu(out)
+        return out
 
 
 class ResCNN1DNET(nn.Module):
@@ -86,21 +87,14 @@ class ResCNN1DNET(nn.Module):
             nn.BatchNorm1d(64),
             nn.ReLU(),
         )
-        self.stage1 = nn.Sequential(
-            ResidualBlock1D(64, 64),
-            ResidualBlock1D(64, 64),
-        )
+        self.stage1 = ResidualBlock1D(64, 64)
         self.pool1 = nn.MaxPool1d(2)
-        self.stage2 = nn.Sequential(
-            ResidualBlock1D(64, 128),
-            ResidualBlock1D(128, 128),
-        )
+        self.stage2 = ResidualBlock1D(64, 128)
         self.pool2 = nn.MaxPool1d(2)
-        self.stage3 = nn.Sequential(
-            ResidualBlock1D(128, 256),
-            ResidualBlock1D(256, 256),
-        )
+        self.stage3 = ResidualBlock1D(128, 256)
+        self.feature_dropout = nn.Dropout(dropout)
         self.pool = nn.AdaptiveAvgPool1d(1)
+        self.pre_emb_bn = nn.BatchNorm1d(256)
         self.emb = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(256, emb_dim),
@@ -114,7 +108,9 @@ class ResCNN1DNET(nn.Module):
         x = self.stage2(x)
         x = self.pool2(x)
         x = self.stage3(x)
+        x = self.feature_dropout(x)
         x = self.pool(x).squeeze(-1)    # (B, 256)
+        x = self.pre_emb_bn(x)
 
         e = self.emb(x)                 # (B, emb_dim)
         e = F.normalize(e, p=2, dim=1)

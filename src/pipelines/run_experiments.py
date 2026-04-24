@@ -72,11 +72,12 @@ class ExperimentSpec:
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     "1": ExperimentSpec(
-        name="rescnn_emb256_m022_P16K8_full960",
-        run_name="rescnn_emb256_m022_P16K8_full960",
+        name="rescnn_bnscale_emb256_m022_P16K8_full960",
+        run_name="rescnn_bnscale_emb256_m022_P16K8_full960",
         model_name="rescnn",
         p=16,
         k=8,
+        lr=5e-5,
         data_mode="clean_only",
         train_sets=("clean100", "clean360", "other500"),
         train_feature_mode="clean",
@@ -378,10 +379,10 @@ t.LEARNING_RATE = {spec.lr!r}
 t.WEIGHT_DECAY = {spec.weight_decay!r}
 
 t.COLLAPSE_PATIENCE = {spec.collapse_patience!r}
-t.LIGHTWEIGHT_VERIFY_EVERY_N_EPOCHS = {3 if spec.model_name.lower().replace("-", "_") in {"conformer", "ecapa", "ecapa_tdnn", "rescnn"} else 0!r}
+t.LIGHTWEIGHT_VERIFY_EVERY_N_EPOCHS = {1 if spec.model_name.lower().replace("-", "_") in {"conformer", "ecapa", "ecapa_tdnn", "rescnn"} else 0!r}
 t.LIGHTWEIGHT_VERIFY_SPLIT = {"dev_clean"!r}
-t.LIGHTWEIGHT_VERIFY_SAME_PAIRS = {2000!r}
-t.LIGHTWEIGHT_VERIFY_DIFF_PAIRS = {2000!r}
+t.LIGHTWEIGHT_VERIFY_SAME_PAIRS = {4000!r}
+t.LIGHTWEIGHT_VERIFY_DIFF_PAIRS = {4000!r}
 resume_checkpoint_path = {str(get_resume_checkpoint_path(spec)) if get_resume_checkpoint_path(spec) is not None else None!r}
 t.RESUME_CHECKPOINT_PATH = resume_checkpoint_path
 
