@@ -1,4 +1,4 @@
-MODEL_NAME = "cnn"
+MODEL_NAME = "rescnn"  # cnn, rescnn, conformer, ecapa
 EMB_DIM = 192
 DROPOUT = 0.3
 

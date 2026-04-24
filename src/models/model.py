@@ -45,6 +45,82 @@ class CNN1DNET(nn.Module):
         return e
 
 
+class ResidualBlock1D(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int):
+        super().__init__()
+        self.conv1 = nn.Conv1d(in_ch, out_ch, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm1d(out_ch)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv1d(out_ch, out_ch, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm1d(out_ch)
+
+        if in_ch != out_ch:
+            self.shortcut = nn.Sequential(
+                nn.Conv1d(in_ch, out_ch, kernel_size=1, bias=False),
+                nn.BatchNorm1d(out_ch),
+            )
+        else:
+            self.shortcut = nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = self.shortcut(x)
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        return self.relu(out + residual)
+
+
+class ResCNN1DNET(nn.Module):
+    """Input: x (B, T, F). Output: L2-normalized speaker embeddings (B, emb_dim)."""
+
+    def __init__(self, n_feats: int, emb_dim: int = 192, dropout: float = 0.3):
+        super().__init__()
+        self.emb_dim = emb_dim
+
+        self.stem = nn.Sequential(
+            nn.Conv1d(n_feats, 64, kernel_size=5, stride=1, padding=2),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+        )
+        self.stage1 = nn.Sequential(
+            ResidualBlock1D(64, 64),
+            ResidualBlock1D(64, 64),
+        )
+        self.pool1 = nn.MaxPool1d(2)
+        self.stage2 = nn.Sequential(
+            ResidualBlock1D(64, 128),
+            ResidualBlock1D(128, 128),
+        )
+        self.pool2 = nn.MaxPool1d(2)
+        self.stage3 = nn.Sequential(
+            ResidualBlock1D(128, 256),
+            ResidualBlock1D(256, 256),
+        )
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.emb = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(256, emb_dim),
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        x = features.transpose(1, 2)    # (B, F, T)
+        x = self.stem(x)
+        x = self.stage1(x)
+        x = self.pool1(x)
+        x = self.stage2(x)
+        x = self.pool2(x)
+        x = self.stage3(x)
+        x = self.pool(x).squeeze(-1)    # (B, 256)
+
+        e = self.emb(x)                 # (B, emb_dim)
+        e = F.normalize(e, p=2, dim=1)
+        return e
+
+
 class FeedForwardModule(nn.Module):
     def __init__(self, d_model: int, ff_mult: int = 4, dropout: float = 0.4):
         super().__init__()
@@ -412,6 +488,13 @@ def build_embedding_model(
 
     if model_name == "cnn":
         return CNN1DNET(
+            n_feats=n_feats,
+            emb_dim=emb_dim,
+            dropout=dropout,
+        )
+
+    if model_name == "rescnn":
+        return ResCNN1DNET(
             n_feats=n_feats,
             emb_dim=emb_dim,
             dropout=dropout,

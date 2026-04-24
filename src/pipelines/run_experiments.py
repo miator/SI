@@ -39,7 +39,7 @@ class ExperimentSpec:
     snr_max: Optional[float] = None
     train_feature_subdir: Optional[str] = None
     emb_dim: int = 256
-    model_name: str = "cnn"  # cnn, conformer, ecapa
+    model_name: str = "cnn"  # cnn, rescnn, conformer, ecapa
     margin: float = 0.22
     p: int = 12
     k: int = 5
@@ -72,12 +72,11 @@ class ExperimentSpec:
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     "1": ExperimentSpec(
-        name="ecapa_emb256_m022_P16K8_full960",
-        run_name="ecapa_emb256_m022_P16K8_full960",
-        model_name="ecapa",
+        name="rescnn_emb256_m022_P16K8_full960",
+        run_name="rescnn_emb256_m022_P16K8_full960",
+        model_name="rescnn",
         p=16,
         k=8,
-        lr=5e-5,
         data_mode="clean_only",
         train_sets=("clean100", "clean360", "other500"),
         train_feature_mode="clean",
@@ -379,7 +378,7 @@ t.LEARNING_RATE = {spec.lr!r}
 t.WEIGHT_DECAY = {spec.weight_decay!r}
 
 t.COLLAPSE_PATIENCE = {spec.collapse_patience!r}
-t.LIGHTWEIGHT_VERIFY_EVERY_N_EPOCHS = {3 if spec.model_name.lower().replace("-", "_") in {"conformer", "ecapa", "ecapa_tdnn"} else 0!r}
+t.LIGHTWEIGHT_VERIFY_EVERY_N_EPOCHS = {3 if spec.model_name.lower().replace("-", "_") in {"conformer", "ecapa", "ecapa_tdnn", "rescnn"} else 0!r}
 t.LIGHTWEIGHT_VERIFY_SPLIT = {"dev_clean"!r}
 t.LIGHTWEIGHT_VERIFY_SAME_PAIRS = {2000!r}
 t.LIGHTWEIGHT_VERIFY_DIFF_PAIRS = {2000!r}

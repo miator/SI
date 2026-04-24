@@ -488,7 +488,7 @@ def main():
         **_build_loader_kwargs(num_workers=t.VAL_NUM_WORKERS))
 
     lightweight_verify_loader = None
-    if normalized_model_name in {"conformer", "ecapa", "ecapa_tdnn"} and lightweight_verify_every > 0:
+    if normalized_model_name in {"conformer", "ecapa", "ecapa_tdnn", "rescnn"} and lightweight_verify_every > 0:
         lightweight_verify_loader = build_lightweight_verify_loader(lightweight_verify_split)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -649,7 +649,7 @@ def main():
                 f"time {elapsed:.2f}s")
 
             if (
-                normalized_model_name in {"conformer", "ecapa", "ecapa_tdnn"}
+                normalized_model_name in {"conformer", "ecapa", "ecapa_tdnn", "rescnn"}
                 and lightweight_verify_loader is not None
                 and (epoch + 1) % lightweight_verify_every == 0
             ):
