@@ -46,24 +46,16 @@ class CNN1DNET(nn.Module):
 
 
 class ResidualBlock1D(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int, residual_scale: float = 0.5):
+    def __init__(self, ch: int, residual_scale: float = 0.5):
         super().__init__()
         self.residual_scale = residual_scale
-        self.conv1 = nn.Conv1d(in_ch, out_ch, kernel_size=3, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm1d(out_ch)
-        self.conv2 = nn.Conv1d(out_ch, out_ch, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm1d(out_ch)
-
-        if in_ch != out_ch:
-            self.shortcut = nn.Sequential(
-                nn.Conv1d(in_ch, out_ch, kernel_size=1, bias=False),
-                nn.BatchNorm1d(out_ch),
-            )
-        else:
-            self.shortcut = nn.Identity()
+        self.conv1 = nn.Conv1d(ch, ch, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm1d(ch)
+        self.conv2 = nn.Conv1d(ch, ch, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm1d(ch)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = self.shortcut(x)
+        residual = x
 
         out = self.conv1(x)
         out = self.bn1(out)
@@ -82,17 +74,26 @@ class ResCNN1DNET(nn.Module):
         super().__init__()
         self.emb_dim = emb_dim
 
-        self.stem = nn.Sequential(
+        self.block1 = nn.Sequential(
             nn.Conv1d(n_feats, 64, kernel_size=5, stride=1, padding=2),
-            nn.BatchNorm1d(64),
             nn.ReLU(),
+            nn.BatchNorm1d(64),
+            nn.MaxPool1d(2),
+            ResidualBlock1D(64),
         )
-        self.stage1 = ResidualBlock1D(64, 64)
-        self.pool1 = nn.MaxPool1d(2)
-        self.stage2 = ResidualBlock1D(64, 128)
-        self.pool2 = nn.MaxPool1d(2)
-        self.stage3 = ResidualBlock1D(128, 256)
-        self.feature_dropout = nn.Dropout(dropout)
+        self.block2 = nn.Sequential(
+            nn.Conv1d(64, 128, kernel_size=5, stride=1, padding=2),
+            nn.ReLU(),
+            nn.BatchNorm1d(128),
+            nn.MaxPool1d(2),
+            ResidualBlock1D(128),
+        )
+        self.block3 = nn.Sequential(
+            nn.Conv1d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm1d(256),
+            ResidualBlock1D(256),
+        )
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.pre_emb_bn = nn.BatchNorm1d(256)
         self.emb = nn.Sequential(
@@ -102,20 +103,15 @@ class ResCNN1DNET(nn.Module):
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         x = features.transpose(1, 2)    # (B, F, T)
-        x = self.stem(x)
-        x = self.stage1(x)
-        x = self.pool1(x)
-        x = self.stage2(x)
-        x = self.pool2(x)
-        x = self.stage3(x)
-        x = self.feature_dropout(x)
+        x = self.block1(x)
+        x = self.block2(x)
+        x = self.block3(x)
         x = self.pool(x).squeeze(-1)    # (B, 256)
         x = self.pre_emb_bn(x)
 
         e = self.emb(x)                 # (B, emb_dim)
         e = F.normalize(e, p=2, dim=1)
         return e
-
 
 class FeedForwardModule(nn.Module):
     def __init__(self, d_model: int, ff_mult: int = 4, dropout: float = 0.4):

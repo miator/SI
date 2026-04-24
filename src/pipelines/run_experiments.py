@@ -63,7 +63,7 @@ class ExperimentSpec:
     resume_from_run: Optional[str] = None
     resume_checkpoint_type: str = "best"
     verify_splits: tuple[str, ...] = DEFAULT_VERIFY_SPLITS
-    verify_checkpoint_types: tuple[str, ...] = ("last", "best")  # best, last
+    verify_checkpoint_types: tuple[str, ...] = ("last", "best", "best_eer")  # best, best_eer, last
     global_summary_name: str = "verify_summary_more_dataset.csv"
     save_verify_artifacts: bool = False
     skip_precompute: bool = True
@@ -72,8 +72,8 @@ class ExperimentSpec:
 
 EXPERIMENTS: dict[str, ExperimentSpec] = {
     "1": ExperimentSpec(
-        name="rescnn_bnscale_emb256_m022_P16K8_full960",
-        run_name="rescnn_bnscale_emb256_m022_P16K8_full960",
+        name="rescnn_mincnn_emb256_m022_P16K8_full960",
+        run_name="rescnn_mincnn_emb256_m022_P16K8_full960",
         model_name="rescnn",
         p=16,
         k=8,
@@ -141,7 +141,14 @@ def get_last_checkpoint_path(spec: ExperimentSpec) -> Path:
 def get_resume_checkpoint_path(spec: ExperimentSpec) -> Optional[Path]:
     if spec.resume_from_run is None:
         return None
-    checkpoint_name = "best.pt" if spec.resume_checkpoint_type == "best" else "last.pt"
+    checkpoint_name_by_type = {
+        "best": "best.pt",
+        "best_eer": "best_eer.pt",
+        "last": "last.pt",
+    }
+    if spec.resume_checkpoint_type not in checkpoint_name_by_type:
+        raise ValueError(f"Unsupported resume_checkpoint_type: {spec.resume_checkpoint_type}")
+    checkpoint_name = checkpoint_name_by_type[spec.resume_checkpoint_type]
     return Path(e.RUNS_DIR) / spec.resume_from_run / "checkpoints" / checkpoint_name
 
 
@@ -379,7 +386,7 @@ t.LEARNING_RATE = {spec.lr!r}
 t.WEIGHT_DECAY = {spec.weight_decay!r}
 
 t.COLLAPSE_PATIENCE = {spec.collapse_patience!r}
-t.LIGHTWEIGHT_VERIFY_EVERY_N_EPOCHS = {1 if spec.model_name.lower().replace("-", "_") in {"conformer", "ecapa", "ecapa_tdnn", "rescnn"} else 0!r}
+t.LIGHTWEIGHT_VERIFY_EVERY_N_EPOCHS = {1 if spec.model_name.lower().replace("-", "_") in {"cnn", "conformer", "ecapa", "ecapa_tdnn", "rescnn"} else 0!r}
 t.LIGHTWEIGHT_VERIFY_SPLIT = {"dev_clean"!r}
 t.LIGHTWEIGHT_VERIFY_SAME_PAIRS = {4000!r}
 t.LIGHTWEIGHT_VERIFY_DIFF_PAIRS = {4000!r}

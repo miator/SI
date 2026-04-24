@@ -1,4 +1,5 @@
 import time
+import os
 from pathlib import Path
 from functools import partial
 import warnings
@@ -363,6 +364,7 @@ def main():
     run_root = Path(e.RUNS_DIR) / run_name
     tb_dir = run_root / "tensorboard"
     ckpt_dir = run_root / "checkpoints"
+    run_dir = ckpt_dir
     best_model_path = ckpt_dir / "best.pt"
     last_model_path = ckpt_dir / "last.pt"
     collapse_patience = getattr(t, "COLLAPSE_PATIENCE", 2)
@@ -491,7 +493,7 @@ def main():
         **_build_loader_kwargs(num_workers=t.VAL_NUM_WORKERS))
 
     lightweight_verify_loader = None
-    if normalized_model_name in {"conformer", "ecapa", "ecapa_tdnn", "rescnn"} and lightweight_verify_every > 0:
+    if lightweight_verify_every > 0:
         lightweight_verify_loader = build_lightweight_verify_loader(lightweight_verify_split)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -588,6 +590,7 @@ def main():
     patience = 8
     min_delta = 1e-4
     best_val_loss = float("inf")
+    best_eer = float("inf")
     bad_epochs = 0
     collapsed_epochs = 0
 
@@ -652,8 +655,7 @@ def main():
                 f"time {elapsed:.2f}s")
 
             if (
-                normalized_model_name in {"conformer", "ecapa", "ecapa_tdnn", "rescnn"}
-                and lightweight_verify_loader is not None
+                lightweight_verify_loader is not None
                 and (epoch + 1) % lightweight_verify_every == 0
             ):
                 verify_metrics = run_lightweight_verification(
@@ -663,13 +665,29 @@ def main():
                     same_pairs=lightweight_verify_same_pairs,
                     diff_pairs=lightweight_verify_diff_pairs,
                 )
+                auc = verify_metrics["auc"]
+                eer = verify_metrics["eer"]
+                print(f"epoch {epoch + 1} | val_loss {va_loss:.4f} | AUC {auc:.6f} | EER {eer:.6f}")
                 print(
                     f"epoch {epoch + 1} | "
-                    f"AUC {verify_metrics['auc']:.6f} | "
-                    f"EER {verify_metrics['eer']:.6f} | "
+                    f"AUC {auc:.6f} | "
+                    f"EER {eer:.6f} | "
                     f"same_mean {verify_metrics['same_mean']:.6f} | "
                     f"diff_mean {verify_metrics['diff_mean']:.6f}"
                 )
+                if eer < best_eer:
+                    best_eer = eer
+                    print(f"\nNew best EER: {best_eer:.6f} -> saving checkpoint\n")
+                    torch.save(
+                        {
+                            "epoch": epoch,
+                            "model_state_dict": model.state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "eer": eer,
+                            "auc": auc,
+                        },
+                        os.path.join(run_dir, "best_eer.pt"),
+                    )
 
             train_near_margin = abs(tr_loss - margin) <= collapse_tolerance
             val_near_margin = abs(va_loss - margin) <= collapse_tolerance

@@ -54,6 +54,8 @@ def _build_loader_kwargs(*, num_workers: int) -> dict:
 def resolve_checkpoint_path(run_root: Path, checkpoint_type: str) -> Path:
     if checkpoint_type == "best":
         path = run_root / "checkpoints" / "best.pt"
+    elif checkpoint_type == "best_eer":
+        path = run_root / "checkpoints" / "best_eer.pt"
     elif checkpoint_type == "last":
         path = run_root / "checkpoints" / "last.pt"
     else:
